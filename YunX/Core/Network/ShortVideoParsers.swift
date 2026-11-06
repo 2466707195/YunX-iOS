@@ -88,6 +88,12 @@ struct DouyinParser: VideoParser {
                 relaxImages: primary == "note"
             ),
             PageCandidate(
+                label: "m-\(primary)",
+                url: "https://m.douyin.com/share/\(primary)/\(link.id)",
+                userAgent: HTTPClient.uaMobile,
+                relaxImages: primary == "note"
+            ),
+            PageCandidate(
                 label: "pc-\(secondary)",
                 url: "https://www.douyin.com/\(secondary)/\(link.id)",
                 userAgent: webUA,
@@ -99,8 +105,8 @@ struct DouyinParser: VideoParser {
     /// 依次尝试；返回 payload（成功时）和每个通道的实测说明（失败时拼进报错）。
     private func fetchViaWebView(link: DetectedVideoLink) async -> (WebPayload?, [String]) {
         var notes: [String] = []
-        // 总预算 55s：单通道最多 26s，剩下的时间留给下一个通道
-        let deadline = Date().addingTimeInterval(55)
+        // 总预算 60s：单通道最多 20s，剩下的时间留给下一个通道
+        let deadline = Date().addingTimeInterval(60)
 
         for candidate in candidates(for: link) {
             let remaining = deadline.timeIntervalSinceNow
@@ -109,25 +115,26 @@ struct DouyinParser: VideoParser {
                 break
             }
 
-            let json = await HeadlessWebView.shared.loadAndExtract(
+            let outcome = await HeadlessWebView.shared.loadAndExtract(
                 url: candidate.url,
                 userAgent: candidate.userAgent,
                 readyCheckJS: Self.readyCheckJS(relaxImages: candidate.relaxImages),
                 extractJS: Self.extractJS(awemeID: link.id, relaxImages: candidate.relaxImages),
-                timeout: min(26, remaining),
+                diagnoseJS: Self.diagnoseJS,
+                timeout: min(20, remaining),
                 // 图文页的图是懒加载的，多等一会儿让轮播把整册铺开
                 settle: candidate.relaxImages ? 0.9 : 0.3,
                 documentStartScripts: [Self.detailHookJS] + WebViewDisguise.scripts(for: candidate.userAgent)
             )
 
-            guard let json,
+            guard let json = outcome.json,
                   let data = json.data(using: .utf8),
                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                notes.append("\(candidate.label):未就绪")
+                notes.append("\(candidate.label):\(outcome.diagnostics)")
                 continue
             }
             if let error = object["error"] as? String, !error.isEmpty {
-                notes.append("\(candidate.label):\(error)")
+                notes.append("\(candidate.label):\(error)[\(outcome.diagnostics)]")
                 continue
             }
 
@@ -410,32 +417,69 @@ struct DouyinParser: VideoParser {
         let relax = relaxImages ? "true" : "false"
         return """
         (function () {
-          var RELAX = \(relax);
-          var raw = window.__yunxAwemeDetail;
-          if (typeof raw === 'string' && raw.length > 0) return 'true';
           try {
-            var text = (document.body && document.body.textContent) || '';
-            text = text.substring(0, 3000);
-            if (text.indexOf('作品不存在') >= 0
-                || text.indexOf('该作品已删除') >= 0
-                || text.indexOf('页面不见了') >= 0) return 'abort';
-          } catch (e) {}
-          var imgs = document.querySelectorAll('img');
-          for (var i = 0; i < imgs.length; i++) {
-            var s = imgs[i].src || '';
-            if (s.indexOf('douyinpic') < 0 && s.indexOf('byteimg') < 0) continue;
-            if (s.indexOf('WEBPC_RELATED') >= 0) continue;
-            if (s.indexOf('pcweb_cover') >= 0) continue;
-            if (s.indexOf('aweme-avatar') >= 0) continue;
-            var isWork = s.indexOf('biz_tag=aweme_images') >= 0 || s.indexOf('tplv-dy-aweme-images') >= 0;
-            if (isWork) return 'true';
-            // 图文页可能不挂 aweme_images 的 tag，页面上除了作品图没有别的图，放宽即可
-            if (RELAX) return 'true';
+            var RELAX = \(relax);
+            var raw = window.__yunxAwemeDetail;
+            if (typeof raw === 'string' && raw.length > 0) return 'true';
+            var body = (document.body && document.body.textContent) || '';
+            body = body.substring(0, 3000);
+            if (body.indexOf('作品不存在') >= 0
+                || body.indexOf('该作品已删除') >= 0
+                || body.indexOf('页面不见了') >= 0
+                || body.indexOf('内容不可见') >= 0) return 'abort';
+            var imgs = document.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) {
+              var s = (imgs[i].currentSrc || imgs[i].src || '') + '';
+              if (s.indexOf('douyinpic') < 0 && s.indexOf('byteimg') < 0) continue;
+              if (s.indexOf('WEBPC_RELATED') >= 0) continue;
+              if (s.indexOf('pcweb_cover') >= 0) continue;
+              if (s.indexOf('aweme-avatar') >= 0) continue;
+              var isWork = s.indexOf('aweme_images') >= 0 || s.indexOf('aweme-images') >= 0;
+              if (isWork) return 'true';
+              // 图文页可能不挂 aweme_images 的 tag，页面上除了作品图没有别的图，放宽即可
+              if (RELAX) return 'true';
+            }
+            // 有些图册用 background-image 铺，没有 <img>
+            if (RELAX) {
+              var styled = document.querySelectorAll('[style*="background-image"]');
+              for (var j = 0; j < styled.length; j++) {
+                var style = (styled[j].getAttribute('style') || '') + '';
+                if (style.indexOf('douyinpic') >= 0) return 'true';
+              }
+            }
+            return 'false';
+          } catch (e) {
+            return 'false';
           }
-          return 'false';
         })()
         """
     }
+
+    /// 失败时用来说明「到底卡在哪」：标题 / 正文长度 / 图片数 / 钩子有没有命中。
+    /// 拼进解析报错里，下一次不用再猜是风控还是字段变了。
+    private static let diagnoseJS = """
+    (function () {
+      try {
+        var title = (document.title || '').substring(0, 40);
+        var body = ((document.body && document.body.textContent) || '').replace(/\\s+/g, ' ').substring(0, 60);
+        var imgs = document.querySelectorAll('img');
+        var works = 0, dypic = 0;
+        for (var i = 0; i < imgs.length; i++) {
+          var s = (imgs[i].currentSrc || imgs[i].src || '') + '';
+          if (s.indexOf('douyinpic') >= 0 || s.indexOf('byteimg') >= 0) {
+            dypic++;
+            if (s.indexOf('aweme_images') >= 0 || s.indexOf('aweme-images') >= 0) works++;
+          }
+        }
+        var hooked = (typeof window.__yunxAwemeDetail === 'string' && window.__yunxAwemeDetail.length > 0) ? 1 : 0;
+        return 'title=' + (title || '-') + '|rs=' + (document.readyState || '?')
+             + '|img=' + imgs.length + '(dy=' + dypic + ',work=' + works + ')'
+             + '|hook=' + hooked + '|body=' + body;
+      } catch (e) {
+        return 'diagnose-error';
+      }
+    })()
+    """
 
     /// 取数：多条数据源都试，只回传必要字段（整份详情 100KB+，回传又慢又容易出问题）。
     ///
@@ -528,12 +572,13 @@ struct DouyinParser: VideoParser {
               var seen = {};
               var all = document.querySelectorAll('img');
               for (var i = 0; i < all.length; i++) {
-                var src = all[i].src || '';
+                // 懒加载图的 src 常常只是占位，真地址在 currentSrc
+                var src = (all[i].currentSrc || all[i].src || '') + '';
                 if (src.indexOf('douyinpic') < 0 && src.indexOf('byteimg') < 0) continue;
                 if (src.indexOf('WEBPC_RELATED') >= 0) continue;
                 if (src.indexOf('pcweb_cover') >= 0) continue;
                 if (src.indexOf('aweme-avatar') >= 0) continue;
-                var isWork = src.indexOf('biz_tag=aweme_images') >= 0 || src.indexOf('tplv-dy-aweme-images') >= 0;
+                var isWork = src.indexOf('aweme_images') >= 0 || src.indexOf('aweme-images') >= 0;
                 if (!isWork && !RELAX) continue;
                 var key = src.split('?')[0];
                 if (seen[key]) continue;
