@@ -35,19 +35,22 @@ if ! command -v xcodegen >/dev/null 2>&1; then
   echo "!! 找不到 xcodegen。执行： bash scripts/install-xcodegen.sh" >&2
   exit 1
 fi
-if ! xcodebuild -version >/dev/null 2>&1; then
+if ! xcodebuild -version >/dev/null 2>&1 && ! xcodebuild -version >/dev/null 2>&1; then
   echo "!! 找不到 xcodebuild（Xcode 未安装或未选择）" >&2
   exit 1
 fi
 
-XCODE_VER="$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')"
+# GitHub 的 macOS runner 上，Xcode 首次被调用偶尔会 SIGABRT（退出码 134），
+# 同一段命令重跑就好。这里对只用于「打印版本信息」的调用做容错，
+# 避免整个构建因为拿不到版本号而中断。
+XCODE_VER="$( { xcodebuild -version 2>/dev/null || xcodebuild -version 2>/dev/null; } | head -1 | awk '{print $2}' || true)"
 XCODE_MAJOR="${XCODE_VER%%.*}"
 echo "    xcode: ${XCODE_VER:-unknown}"
 
 # ---- iOS SDK 版本检查 ----
 # YunX 部署目标是 iOS 16.4，不使用 iOS 18/26 的任何新 API，
 # 因此任何 Xcode 15.4+ 的 SDK 都能编译，只做最低版本提示。
-SDK_VER="$(xcodebuild -showsdks 2>/dev/null | grep -oE 'iphoneos[0-9.]+' | head -1 | grep -oE '[0-9.]+$')"
+SDK_VER="$( { xcodebuild -showsdks 2>/dev/null || true; } | grep -oE 'iphoneos[0-9.]+' | head -1 | grep -oE '[0-9.]+$' || true)"
 SDK_MAJOR="${SDK_VER%%.*}"
 echo "    iphoneos sdk: ${SDK_VER:-unknown}"
 if [ -n "$SDK_MAJOR" ] && [ "$SDK_MAJOR" -lt 16 ]; then
