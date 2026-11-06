@@ -72,6 +72,8 @@ final class HTTPClient {
     static let shared = HTTPClient()
     /// 桌面 UA 专用（网页登录态、SSR 页面都用它）
     static let desktop = HTTPClient(userAgent: HTTPClient.uaDesktop)
+    /// 移动 UA 专用：快手这类站点对桌面 UA 返回的是 SPA 壳页，SSR 数据只在移动端页面上
+    static let mobile = HTTPClient(userAgent: HTTPClient.uaMobile)
 
     private let session: URLSession
     private let userAgent: String
@@ -203,6 +205,54 @@ final class HTTPClient {
             return response.finalURL
         }
         throw HTTPError.status(response.status, "")
+    }
+
+    /// **只跟一跳**：返回第一次 3xx 的 `Location`（不跟到终点）。
+    ///
+    /// 快手要它：`v.kuaishou.com/<码>` / `www.kuaishou.com/short-video/<id>` 都是入口页，
+    /// 302 到哪一跳很关键（移动端作品页 `v.m.chenzhongtech.com/fw/photo/...` 才有 SSR 数据），
+    /// 而一次性跟到终点会丢掉作品 id。没有重定向时返回 nil。
+    func firstRedirectLocation(_ url: String, headers: [String: String] = [:]) async throws -> String? {
+        guard let target = URL(string: url) else { throw HTTPError.invalidURL(url) }
+        var request = URLRequest(url: target)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        let delegate = RedirectStopDelegate()
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { return nil }
+        guard (300...399).contains(http.statusCode) else { return nil }
+        let location = http.value(forHTTPHeaderField: "Location")
+        guard let location, !location.isEmpty else { return nil }
+        // Location 可能是协议相对地址
+        if location.hasPrefix("//") { return "https:" + location }
+        return location
+    }
+}
+
+// MARK: - 重定向控制
+
+/// 让请求**停在第一次 3xx**：`URLSession` 默认会自动跟到终点，跟完就看不见中间那跳的地址了。
+/// 这里拒绝重定向，`data(for:)` 直接把 3xx 响应交回来，我们读它的 `Location`。
+private final class RedirectStopDelegate: NSObject, URLSessionTaskDelegate {
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 

@@ -23,8 +23,12 @@ enum VideoResolveService {
             throw VideoParseError(.unsupported, "没有识别到视频链接，请检查是否粘贴完整")
         }
 
-        // 短链要先跟随重定向拿到最终地址，再重新识别一次
-        if link.isShortLink {
+        // 短链要先跟随重定向拿到最终地址，再重新识别一次。
+        //
+        // ★ 快手是例外：`v.kuaishou.com/<码>` 必须由解析器自己跟一跳（要 iPhone UA +
+        //   `v.kuaishou.com` Referer），在这里提前展开会落到「精彩推荐」首页、把作品 id 弄丢，
+        //   表象就是「内容不存在、已删除或不可见」。
+        if link.isShortLink, link.platform != .kuaishou {
             do {
                 let expanded = try await HTTPClient.shared.expandShortLink(link.url)
                 link = VideoLinkParser.reparse(expandedURL: expanded, fallback: link)

@@ -15,8 +15,8 @@
 | 夸克网盘 分享解析 / 直链 / 下载 | ✅ 完整 | `sharepage/token → detail → download` 三步 |
 | UC 网盘 分享解析 / 直链 / 下载 | ✅ 完整 | 与夸克同接口族，仅 host/Referer 不同 |
 | 百度 / 迅雷 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 | 🔶 仅链接识别 | 正则已对齐上游，适配器未注册；UI 显示「适配中」 |
-| 抖音（视频 / 图集，去水印） | ✅ | `_ROUTER_DATA` + `playwm→play` |
-| 快手 | ✅ | `__APOLLO_STATE__` 的 `photoUrl/playUrl/srcNoMark` |
+| 抖音（视频 / 图集 / 动图，去水印） | ✅ | 隐藏 WKWebView 过 `byted_acrawler` 挑战，钩 `aweme/detail` 响应取数；HTTP+SSR 仅作回退 |
+| 快手 | ✅ | iPhone UA + `v.kuaishou.com` Referer，跟一跳进移动作品页，读 `window.INIT_STATE` 的 `mainMvUrls` / 图集 atlas |
 | 微博（status / fid / tv） | ✅ | `statuses/show` 优先，`fid/tv` 走页面正则 |
 | AcFun | ✅ | `window.pageInfo` → `ksPlayJson` → m3u8 |
 | 哔哩哔哩 | ✅ | 登录走 DASH 分轨，未登录退 html5 单文件 |
@@ -219,6 +219,7 @@ brew install xcodegen && xcodegen generate && open YunX.xcodeproj
 2. B 站 >1080P 需要大会员 Cookie；未登录最高 480P 左右。
 3. m3u8 若带 `EXT-X-KEY`（AES-128），明确报「不支持加密流」，不做破解。
 4. 抖音/快手/微博的 SSR 字段会漂移；解析失败时错误里带原始 detail，便于按需修规则。
+5. 抖音必须让页面 JS 跑起来（纯 HTTP 只会拿到 `byted_acrawler` 挑战页），所以解析时会挂一个 1×1 的隐藏 WKWebView，最长约 40 秒；快手只走 HTTP。
 5. `NSAllowsArbitraryLoads` 是为 http 直链/m3u8 放开的；若要上架 App Store 得改成按域白名单。
 6. 本工程只做「解析自己有权访问的分享」；不含任何绕过权限、破解加密的能力。
 

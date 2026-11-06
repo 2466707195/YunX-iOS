@@ -132,8 +132,6 @@ struct ResolveScreen: View {
                         SectionHeader(title: "最近解析", action: { model.accounts.clearHistory() }, actionTitle: "清空")
                         historyList
                     }
-
-                    disclaimerCard
                 }
                 .padding(.horizontal, AuroraMetrics.pagePadding)
                 .padding(.top, 4)
@@ -339,22 +337,6 @@ struct ResolveScreen: View {
         if let platform = SharePlatform(rawValue: item.platform) { return platform.displayName }
         if let platform = VideoPlatform(rawValue: item.platform) { return platform.displayName }
         return item.platform
-    }
-
-    // MARK: 免责声明
-
-    private var disclaimerCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("仅供个人学习与技术交流")
-                .font(AuroraFont.labelMedium)
-                .foregroundStyle(Aurora.inkSoft)
-            Text("下载内容的版权归原作者所有；请遵守各平台服务条款，并在 24 小时内删除。使用本应用产生的后果由使用者自行承担。")
-                .font(.system(size: 11))
-                .foregroundStyle(Aurora.muted)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 6)
-        .padding(.top, 8)
     }
 
     // MARK: 绑定
