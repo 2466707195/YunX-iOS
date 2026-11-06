@@ -18,8 +18,9 @@ struct YunXApp: App {
 
 enum AppTab: Hashable {
     case resolve
-    case accounts
+    case drive
     case download
+    case accounts
     case settings
 }
 
@@ -30,13 +31,12 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var tab: AppTab = .resolve
-
     private var tabItems: [AuroraTabSpec<AppTab>] {
         [
             AuroraTabSpec(id: .resolve, title: "解析", icon: "link"),
-            AuroraTabSpec(id: .accounts, title: "账号", icon: "person.crop.circle"),
+            AuroraTabSpec(id: .drive, title: "网盘", icon: "folder"),
             AuroraTabSpec(id: .download, title: "下载", icon: "arrow.down.circle"),
+            AuroraTabSpec(id: .accounts, title: "账号", icon: "person.crop.circle"),
             AuroraTabSpec(id: .settings, title: "设置", icon: "gearshape")
         ]
     }
@@ -45,15 +45,17 @@ struct RootView: View {
         ZStack(alignment: .top) {
             AuroraBackdrop()
 
-            AuroraGlassTabBar(selection: $tab, items: tabItems) { current in
+            AuroraGlassTabBar(selection: $model.tab, items: tabItems) { current in
                 Group {
                     switch current {
                     case .resolve:
                         ResolveScreen()
-                    case .accounts:
-                        AccountsScreen()
+                    case .drive:
+                        DriveScreen()
                     case .download:
                         DownloadScreen()
+                    case .accounts:
+                        AccountsScreen()
                     case .settings:
                         SettingsScreen()
                     }

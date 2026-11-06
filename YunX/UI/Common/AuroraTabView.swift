@@ -136,12 +136,12 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
     /// 胶囊内容区（不含内边距）的宽度
     @State private var contentWidth: CGFloat = 0
 
-    /// 胶囊高度（含上下内边距）
-    private let barHeight: CGFloat = 62
-    /// 内容区与胶囊边缘的间距
-    private let barInset: CGFloat = 7
-    /// 单项高度
-    private let itemHeight: CGFloat = 48
+    /// 胶囊高度
+    private let barHeight: CGFloat = 60
+    /// 图标圆的直径
+    private let iconDiameter: CGFloat = 26
+    /// 选中玻璃块比胶囊高出的量（上下各一半），做出「凸出来」的立体感
+    private let indicatorOverflow: CGFloat = 8
     /// 拖动判定阈值
     private let dragThreshold: CGFloat = 5
 
@@ -183,18 +183,17 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
         return contentWidth / CGFloat(items.count)
     }
 
-    /// 玻璃块宽度（项宽两侧各留 4pt 呼吸）
+    /// 玻璃块宽度：与单项等宽，左右直接贴着项边界（与设计稿一致）
     private var indicatorWidth: CGFloat {
-        max(0, itemWidth - 8)
+        itemWidth
     }
 
     /// 玻璃块的横向位置：当前项基准位 + 拖动位移，并夹在首尾之间
     private var indicatorX: CGFloat {
         guard itemWidth > 0, !items.isEmpty else { return 0 }
-        let sideGap = (itemWidth - indicatorWidth) / 2
-        let raw = CGFloat(currentIndex) * itemWidth + dragTranslation + sideGap
         let lastGap = CGFloat(max(0, items.count - 1)) * itemWidth
-        return min(max(raw, sideGap), lastGap + sideGap)
+        let raw = CGFloat(currentIndex) * itemWidth + dragTranslation
+        return min(max(raw, 0), lastGap)
     }
 
     private var bar: some View {
@@ -206,7 +205,7 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
                     tabItem(items[index], index: index)
                 }
             }
-            .frame(height: itemHeight)
+            .frame(height: barHeight)
             .contentShape(Rectangle())
             .background(
                 GeometryReader { proxy in
@@ -218,12 +217,10 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
             )
             .gesture(dragGesture)
         }
-        .padding(.horizontal, barInset)
-        .padding(.vertical, barInset)
         .frame(height: barHeight)
         .background(
             // 无色玻璃：材质 + 极淡白色高光，不掺品牌色
-            GlassSurface(shape: Capsule(style: .continuous), shadowRadius: 22, highlight: 0.20)
+            GlassSurface(shape: Capsule(style: .continuous), shadowRadius: 18, highlight: 0.16)
         )
         .contentShape(Capsule(style: .continuous))
         .onPreferenceChange(AuroraTabBarWidthKey.self) { width in
@@ -231,34 +228,34 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
         }
         .padding(.horizontal, AuroraMetrics.pagePadding)
         .padding(.top, 8)
-        .padding(.bottom, 4)
+        // 玻璃块上下各溢出 4pt，留出这段空间，避免贴到上一页内容
+        .padding(.bottom, 8)
     }
 
-    /// 承托选中项的玻璃块
+    /// 承托选中项的玻璃块：空心描边胶囊 + 极淡填充 + 柔和投影，比容器高出一圈
     ///
     /// 拆成几个小属性而不是一条长链：SwiftUI 的类型检查器对「多层 overlay + 内联渐变」
     /// 的表达式很容易超时（`unable to type-check in reasonable time`）。
     private var indicator: some View {
         Capsule(style: .continuous)
-            .fill(.ultraThinMaterial)
+            .fill(Color.white.opacity(isDragging ? 0.80 : 0.66))
             .overlay(Capsule(style: .continuous).fill(indicatorFill))
-            .overlay(Capsule(style: .continuous).strokeBorder(indicatorStroke, lineWidth: 1))
+            .overlay(Capsule(style: .continuous).strokeBorder(indicatorStroke, lineWidth: 1.2))
             .shadow(
-                color: Color.black.opacity(isDragging ? 0.11 : 0.07),
-                radius: isDragging ? 11 : 7,
+                color: Color.black.opacity(isDragging ? 0.13 : 0.09),
+                radius: isDragging ? 12 : 9,
                 x: 0,
-                y: 2
+                y: 3
             )
-            .frame(width: indicatorWidth, height: itemHeight - 6)
-            .offset(x: indicatorX, y: 3)
+            .frame(width: indicatorWidth, height: barHeight + indicatorOverflow)
             .opacity(itemWidth > 0 ? 1 : 0)
     }
 
     private var indicatorFill: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(isDragging ? 0.72 : 0.58),
-                Color.white.opacity(0.30)
+                Color.white.opacity(isDragging ? 0.34 : 0.22),
+                Color.white.opacity(0.02)
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -268,8 +265,8 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
     private var indicatorStroke: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(0.95),
-                Color.white.opacity(0.35)
+                Color.white.opacity(0.98),
+                Color.white.opacity(0.42)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -281,19 +278,25 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
         let active = index == currentIndex
         let pressed = pressedIndex == index
 
-        VStack(spacing: 2) {
-            Image(systemName: active ? item.selectedIcon : item.icon)
-                .font(.system(size: 17, weight: active ? .semibold : .regular))
-                .frame(height: 21)
+        VStack(spacing: 3) {
+            ZStack {
+                Circle()
+                    .fill(active ? Aurora.brand : Aurora.ink)
+                Image(systemName: active ? item.selectedIcon : item.icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white)
+            }
+            .frame(width: iconDiameter, height: iconDiameter)
+
             Text(item.title)
-                .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                .font(.system(size: 11, weight: active ? .semibold : .medium))
                 .lineLimit(1)
+                .foregroundStyle(active ? Aurora.brand : Aurora.ink)
         }
-        // 选中只染字色，不填色块 —— 保持「无色玻璃」的统一观感
-        .foregroundStyle(active ? Aurora.brand : Aurora.inkSoft.opacity(0.9))
+        // 选中只染字色与圆底，不铺大面积色块 —— 保持「无色玻璃」的统一观感
         .frame(maxWidth: .infinity)
-        .frame(height: itemHeight)
-        .scaleEffect(pressed ? 0.90 : 1)
+        .frame(height: barHeight)
+        .scaleEffect(pressed ? 0.92 : 1)
         .animation(.spring(response: 0.22, dampingFraction: 0.7), value: pressed)
         .overlay(alignment: .top) {
             if let badge = item.badge, !badge.isEmpty {
@@ -303,7 +306,7 @@ struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
                     .padding(.horizontal, 4.5)
                     .padding(.vertical, 1)
                     .background(Capsule(style: .continuous).fill(Aurora.rose))
-                    .offset(x: 15, y: 1)
+                    .offset(x: 14, y: 3)
             }
         }
         .accessibilityElement(children: .ignore)

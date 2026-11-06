@@ -374,6 +374,8 @@ struct AccountFlowSheet: View {
                         ) {
                             if let account = existingAccount {
                                 model.accounts.remove(account)
+                                // 网盘页可能正停在这个平台的目录里，账号没了必须让它重来
+                                model.drive.invalidate()
                                 model.show("已退出 \(target.title)", .info)
                             }
                             dismiss()
@@ -524,6 +526,8 @@ struct AccountFlowSheet: View {
                     nickname: nickname.isEmpty ? "网页登录" : nickname,
                     method: method
                 )
+                // 新登录的网盘要能被网盘页立刻用上
+                model.drive.invalidate()
                 model.show("已保存 \(platform.displayName) 账号", .success)
                 dismiss()
             case .video(let platform):

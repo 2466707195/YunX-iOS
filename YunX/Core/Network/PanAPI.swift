@@ -23,6 +23,43 @@ protocol PanAPI {
     func downloadLink(for entry: ShareEntry, in snapshot: ShareSnapshot, cookie: String) async throws -> ShareDownloadLink
 }
 
+// MARK: - 网盘文件接口（已登录）
+
+/// 「我的网盘」适配器：浏览自己账号里的文件 + 取直链。
+///
+/// 与 `PanAPI`（分享维度）分开：分享要 `pwd_id / stoken / fids_token`，
+/// 自己的文件只要登录态 `fid`。接口路径虽然都是 `/1/clouddrive/file/download`，
+/// 但 body 完全不同，混在一起最容易出「分享能下、网盘报错」这种半通不通的问题。
+protocol DriveAPI {
+
+    var platform: SharePlatform { get }
+
+    /// 列某个目录（根目录用 `"0"`）
+    func list(parentId: String, cookie: String) async throws -> [DriveFile]
+
+    /// 取某个文件（非文件夹）的下载直链
+    func downloadLink(for file: DriveFile, cookie: String) async throws -> ShareDownloadLink
+}
+
+/// 平台 → 网盘适配器。
+enum DriveRegistry {
+
+    static func api(for platform: SharePlatform) -> DriveAPI? {
+        switch platform {
+        case .quark: return QuarkFamily.quark
+        case .uc: return QuarkFamily.uc
+        default: return nil
+        }
+    }
+
+    static func require(_ platform: SharePlatform) throws -> DriveAPI {
+        guard let api = api(for: platform) else {
+            throw PanError.notImplemented(platform)
+        }
+        return api
+    }
+}
+
 // MARK: - 适配器注册表
 
 /// 平台 → 适配器。没注册的平台会得到 `PanError.notImplemented`，
@@ -361,5 +398,111 @@ final class QuarkFamily: PanAPI {
             throw PanError.shareUnavailable(message.isEmpty ? "分享已失效，请重新解析" : message)
         }
         throw PanError.message(message.isEmpty ? "取链失败（code \(code)）" : "\(message)（code \(code)）")
+    }
+}
+
+// MARK: - 我的网盘（夸克 / UC）
+
+/// 浏览自己账号里的文件。
+///
+/// 接口来自上游 `QuarkApi.listCloudFiles` / `getDownloadLink`（抓包确认）：
+/// - 列表：`GET /1/clouddrive/file/sort?pdir_fid=…`，`data.list[]` 里 `fid / file_name / size / dir / updated_at`；
+/// - 取链：`POST /1/clouddrive/file/download`，body **只有** `fids`，不需要 `stoken` / `fids_token`。
+extension QuarkFamily: DriveAPI {
+
+    func list(parentId: String, cookie: String) async throws -> [DriveFile] {
+        var components = URLComponents(string: "\(host)/1/clouddrive/file/sort")
+        components?.queryItems = [
+            URLQueryItem(name: "pr", value: platform == .uc ? "UCBrowser" : "ucpro"),
+            URLQueryItem(name: "fr", value: "pc"),
+            URLQueryItem(name: "uc_param_str", value: ""),
+            URLQueryItem(name: "pdir_fid", value: parentId),
+            URLQueryItem(name: "_page", value: "1"),
+            // 单页 100 是接口上限；再大的目录先只取第一页，界面上给「还有更多」的提示
+            URLQueryItem(name: "_size", value: "100"),
+            URLQueryItem(name: "_fetch_total", value: "1"),
+            URLQueryItem(name: "_fetch_sub_dirs", value: "0"),
+            URLQueryItem(name: "_sort", value: "file_type:asc,updated_at:desc"),
+            URLQueryItem(name: "fetch_all_file", value: "1"),
+            URLQueryItem(name: "fetch_risk_file_name", value: "1")
+        ]
+        guard let url = components?.url?.absoluteString else {
+            throw PanError.message("目录地址构造失败")
+        }
+
+        let json = try await get(url, cookie: cookie)
+        try Self.check(json, hasPasscode: true, platform: platform)
+
+        let list = JSONSearch.array(in: json, path: ["data", "list"])
+        var output: [DriveFile] = []
+        for item in list {
+            guard let dict = item as? [String: Any] else { continue }
+            if let file = Self.mapDriveFile(dict, parentId: parentId) { output.append(file) }
+        }
+        // 文件夹在前、文件在后，各自按名字排序（与网盘网页端一致）
+        return output.sorted { left, right in
+            if left.isFolder != right.isFolder { return left.isFolder }
+            return left.name.localizedStandardCompare(right.name) == .orderedAscending
+        }
+    }
+
+    func downloadLink(for file: DriveFile, cookie: String) async throws -> ShareDownloadLink {
+        let url = "\(host)/1/clouddrive/file/download?\(config.downloadQuery)"
+        let body: [String: Any] = ["fids": [file.id]]
+
+        let json = try await post(url, body: body, cookie: cookie)
+        try Self.checkDownload(json, platform: platform)
+
+        guard let item = JSONSearch.array(in: json, path: ["data"]).first as? [String: Any] else {
+            throw PanError.message("接口没有返回直链（data 为空）")
+        }
+        var link = JSONSearch.str(item, "download_url")
+        guard !link.isEmpty else {
+            throw PanError.message("接口没有返回 download_url，文件可能被风控或已损坏")
+        }
+        link = TextUtil.httpsURL(link)
+
+        var name = JSONSearch.str(item, "file_name")
+        if name.isEmpty { name = JSONSearch.str(item, "filename") }
+        if name.isEmpty { name = file.name }
+        let size = JSONSearch.num(item, "size")
+
+        var downloadHeaders: [String: String] = [
+            "User-Agent": HTTPClient.uaDesktop,
+            "Referer": referer
+        ]
+        if !cookie.isEmpty { downloadHeaders["Cookie"] = cookie }
+
+        return ShareDownloadLink(
+            url: link,
+            fileName: name,
+            size: size > 0 ? size : file.size,
+            headers: downloadHeaders,
+            platform: platform
+        )
+    }
+
+    private static func mapDriveFile(_ dict: [String: Any], parentId: String) -> DriveFile? {
+        let fid = JSONSearch.str(dict, "fid")
+        guard !fid.isEmpty else { return nil }
+        var name = JSONSearch.str(dict, "file_name")
+        if name.isEmpty { name = JSONSearch.str(dict, "fname") }
+        if name.isEmpty { name = "未命名" }
+        let isFolder = JSONSearch.bool(dict, "dir")
+        let size = JSONSearch.num(dict, "size")
+        var updated = ""
+        let ms = JSONSearch.num(dict, "updated_at")
+        if ms > 0 {
+            updated = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+                .formatted("yyyy-MM-dd HH:mm")
+        }
+        return DriveFile(
+            id: fid,
+            name: name,
+            isFolder: isFolder,
+            size: isFolder ? 0 : size,
+            updatedText: updated,
+            parentId: parentId
+        )
     }
 }

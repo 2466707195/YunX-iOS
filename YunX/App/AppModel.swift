@@ -30,12 +30,15 @@ final class AppModel: ObservableObject {
     @Published var toast: Toast?
     /// 回到前台时从剪贴板发现的可解析链接（解析页会显示成一条「一键解析」提示）
     @Published var clipboardSuggestion: String?
+    /// 当前 Tab。提到这里是为了让页面能互相跳转（例如网盘页的「去登录」直接切到账号页）
+    @Published var tab: AppTab = .resolve
     @Published private(set) var downloadFolderPath: String = ""
 
     let settings: AppSettings
     let accounts: AccountStore
     let downloads: DownloadManager
     let resolve: ResolveCoordinator
+    let drive: DriveBrowserModel
 
     private var bag = Set<AnyCancellable>()
     private var lastClipboardText = ""
@@ -45,21 +48,27 @@ final class AppModel: ObservableObject {
         let accounts = AccountStore()
         let downloads = DownloadManager(settings: settings)
         let resolve = ResolveCoordinator(accounts: accounts, downloads: downloads)
+        let drive = DriveBrowserModel(accounts: accounts, downloads: downloads)
 
         self.settings = settings
         self.accounts = accounts
         self.downloads = downloads
         self.resolve = resolve
+        self.drive = drive
 
         bind(settings)
         bind(accounts)
         bind(downloads)
         bind(resolve)
+        bind(drive)
 
         downloads.onEvent = { [weak self] event in
             self?.handle(event)
         }
         resolve.onToast = { [weak self] text, kind in
+            self?.show(text, kind)
+        }
+        drive.onToast = { [weak self] text, kind in
             self?.show(text, kind)
         }
         downloadFolderPath = StoragePaths.downloads.path
