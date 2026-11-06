@@ -76,8 +76,10 @@ struct AuroraTabHost<Value: Hashable, Content: View>: View {
                 }
             }
         }
-        // 只染选中色；玻璃底色由系统决定，不要再设背景
-        .tint(Aurora.brand)
+        // 选中态**无彩色**：近黑 ink，不是 brand。
+        // 不设的话系统默认给蓝色 tint，底栏会和内容里的品牌色抢注意力。
+        // 玻璃底色由系统决定，不要再设背景。
+        .tint(Aurora.ink)
     }
 
     // MARK: iOS 16/17：同一个 TabView，用 .tabItem
@@ -90,6 +92,6 @@ struct AuroraTabHost<Value: Hashable, Content: View>: View {
                     .tag(item.id)
             }
         }
-        .tint(Aurora.brand)
+        .tint(Aurora.ink)
     }
 }
