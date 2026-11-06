@@ -241,15 +241,27 @@ struct VideoResultScreen: View {
 
     // MARK: 图集网格
 
+    /// 网格列：自适应宽度 + 固定间距。
+    ///
+    /// 只用一个 `.adaptive` 列，不写死两列 —— 列数由可用宽度决定（iPhone 竖屏两列、
+    /// 横屏/iPad 自动三到五列），每列等宽，格子再用 1:1 锁死，所以任何屏幕上都对齐。
+    private var gridColumns: [GridItem] {
+        [
+            GridItem(
+                .adaptive(
+                    minimum: AuroraMetrics.gridTileMinWidth,
+                    maximum: AuroraMetrics.gridTileMaxWidth
+                ),
+                spacing: AuroraMetrics.gridSpacing,
+                alignment: .center
+            )
+        ]
+    }
+
     private var imageGrid: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 8),
-                GridItem(.flexible(), spacing: 8)
-            ],
-            spacing: 8
-        ) {
+        LazyVGrid(columns: gridColumns, alignment: .center, spacing: AuroraMetrics.gridSpacing) {
             ForEach(images) { media in
+                let picked = resolve.selectedMediaIDs.contains(media.id)
                 Button {
                     if selecting {
                         resolve.toggleSelection(media)
@@ -258,28 +270,21 @@ struct VideoResultScreen: View {
                     }
                 } label: {
                     ZStack(alignment: .topTrailing) {
-                        RemoteImageFill(
+                        // 正方形 + 黄金比例圆角：所有格子尺寸、宽高比一致，裁切居中
+                        RemoteImageTile(
                             url: media.url,
                             headers: media.headers,
-                            height: 150,
-                            cornerRadius: 16,
-                            systemIcon: "photo"
+                            systemIcon: "photo",
+                            isHighlighted: picked
                         )
                         if selecting {
-                            SelectDot(isOn: resolve.selectedMediaIDs.contains(media.id))
+                            SelectDot(isOn: picked)
                                 .padding(8)
                         } else if !media.motionUrl.isEmpty {
                             TinyChip(text: "动图", tint: Aurora.rose)
                                 .padding(8)
                         }
                     }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(
-                                resolve.selectedMediaIDs.contains(media.id) ? Aurora.brand : Color.clear,
-                                lineWidth: 2
-                            )
-                    )
                 }
                 .buttonStyle(PressScaleStyle(scale: 0.97))
             }

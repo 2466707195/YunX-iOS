@@ -97,6 +97,22 @@ enum AuroraMetrics {
     static let controlButtonIconSpacing: CGFloat = 7
     static let smallButtonHeight: CGFloat = controlButtonHeight  // 旧名保留
     static let iconButtonSize: CGFloat = 44
+
+    // MARK: 图集网格（行列严丝合缝的一套度量）
+
+    /// 网格横竖间距用同一个值：行列对齐靠它，横竖不等会把格子看歪
+    static let gridSpacing: CGFloat = 10
+    /// 网格单元最小宽度：iPhone 竖屏两列，iPad / 横屏自动变多列
+    static let gridTileMinWidth: CGFloat = 150
+    /// 网格单元最大宽度：宽度够大时不再无限撑开，免得一张图占半屏
+    static let gridTileMaxWidth: CGFloat = 240
+
+    /// 黄金比例圆角：圆角 = 短边 × 0.146（≈ 1/φ⁴，每级比上一级小 0.618），
+    /// 并夹在 12…30 之间。这样同一套代码在不同格子里都是同一个观感，
+    /// 小屏不会显得「圆得像药丸」，大屏也不会「方得像贴纸」。
+    static func goldenRadius(for side: CGFloat) -> CGFloat {
+        min(max(side * 0.1459, 12), 30)
+    }
 }
 
 // MARK: - 形状

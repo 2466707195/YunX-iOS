@@ -328,53 +328,134 @@ struct RemoteImageFill: View {
         ZStack {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Aurora.surfaceVariant)
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(height: height)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            } else {
-                VStack(spacing: 6) {
-                    Image(systemName: failed ? systemIcon : "photo")
-                        .font(.system(size: 22))
-                        .foregroundStyle(Aurora.muted)
-                    if !failed {
-                        ProgressView().scaleEffect(0.7).tint(Aurora.muted)
+            // 宽度也要锁住：只给高度的话，`scaledToFill` 会按图片自身比例横向溢出，
+            // 卡片里的封面就会顶破右边距（这是之前图集「大小不一、左右错位」的同一个 bug）
+            GeometryReader { geo in
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: failed ? systemIcon : "photo")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Aurora.muted)
+                        if !failed {
+                            ProgressView().scaleEffect(0.7).tint(Aurora.muted)
+                        }
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
         }
+        .frame(maxWidth: .infinity)
         .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: url) { await load() }
     }
 
     private func load() async {
-        guard !url.isEmpty, let target = URL(string: TextUtil.httpsURL(url)) else {
+        guard let decoded = await RemoteImageLoader.load(url: url, headers: headers) else {
             failed = true
             return
         }
-        let key = (url + "|" + headers.values.joined()).hash.description as NSString
-        if let cached = ImageCache.shared.object(forKey: key) {
-            image = cached
-            return
-        }
+        image = decoded
+    }
+}
+
+// MARK: - 远程图片下载（带缓存）
+
+/// 统一的一处下载 + 缓存：带请求头（小红书 / Pixiv 直链不带 Referer 会 403），
+/// 走共享 `NSCache`，同一张图不会因为出现在两个视图里就下载两次。
+enum RemoteImageLoader {
+
+    static func cacheKey(url: String, headers: [String: String]) -> NSString {
+        let stamp = headers
+            .sorted { $0.key < $1.key }
+            .map { $0.key + "=" + $0.value }
+            .joined(separator: "&")
+        return (url + "|" + stamp).hash.description as NSString
+    }
+
+    static func load(url: String, headers: [String: String]) async -> UIImage? {
+        guard !url.isEmpty, let target = URL(string: TextUtil.httpsURL(url)) else { return nil }
+        let key = cacheKey(url: url, headers: headers)
+        if let cached = ImageCache.shared.object(forKey: key) { return cached }
         var request = URLRequest(url: target)
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let decoded = UIImage(data: data) else {
-                failed = true
-                return
+        request.timeoutInterval = 25
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let decoded = UIImage(data: data) else { return nil }
+        ImageCache.shared.setObject(decoded, forKey: key)
+        return decoded
+    }
+}
+
+// MARK: - 图集方块（等比、严丝合缝）
+
+/// 图集网格里的「方块图」，替代 `RemoteImageFill` 在网格里的用法。
+///
+/// 为什么换：`RemoteImageFill` 只锁高度、宽度交给图片自身比例（`scaledToFill` 后没有宽度约束），
+/// 同一行里的图会各自溢出列宽 —— 表现就是「大小不一、左右错落、上下不齐」。
+/// 这里按 **1:1 锁死**：`scaledToFill` + 双向 `frame` + `clipped`，
+/// 任何比例的图都恰好铺满同一块方格，裁切居中；圆角用黄金比例随格子大小等比缩放。
+struct RemoteImageTile: View {
+
+    let url: String
+    var headers: [String: String] = [:]
+    var systemIcon: String = "photo"
+    /// 选中态描边（放进来是为了和圆角共用同一个 radius）
+    var isHighlighted: Bool = false
+
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            let radius = AuroraMetrics.goldenRadius(for: side)
+            ZStack {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Aurora.surfaceVariant)
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: failed ? systemIcon : "photo")
+                            .font(.system(size: max(16, side * 0.14)))
+                            .foregroundStyle(Aurora.muted)
+                        if !failed {
+                            ProgressView().scaleEffect(0.7).tint(Aurora.muted)
+                        }
+                    }
+                }
             }
-            ImageCache.shared.setObject(decoded, forKey: key)
-            image = decoded
-        } catch {
-            failed = true
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(isHighlighted ? Aurora.brand : Color.clear, lineWidth: 2)
+            )
         }
+        // 方块：宽度由网格给，高度跟着等于宽度（不同屏幕下始终是正方形）
+        .aspectRatio(1, contentMode: .fit)
+        .task(id: url) { await reload() }
+    }
+
+    private func reload() async {
+        guard let decoded = await RemoteImageLoader.load(url: url, headers: headers) else {
+            failed = true
+            return
+        }
+        image = decoded
     }
 }
 
