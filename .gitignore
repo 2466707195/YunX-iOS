@@ -1,0 +1,22 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# XcodeGen 生成物（工程文件与 Info.plist 由 project.yml 生成，不入库）
+YunX.xcodeproj/
+YunX/Resources/Info.plist
+
+# macOS
+.DS_Store
+
+# 全能签上传脚本记住的地址（跟机器走，不入库）
+scripts/.qnq_last_server

@@ -1,0 +1,82 @@
+name: YunX
+options:
+  bundleIdPrefix: com.yunx
+  deploymentTarget:
+    iOS: "16.4"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "15.4"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.4"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+
+targets:
+  YunX:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.4"
+    sources:
+      - path: YunX
+        excludes:
+          - "Resources/Info.plist"
+    info:
+      path: YunX/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: 云析
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        CFBundleDevelopmentRegion: zh-Hans
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIUserInterfaceStyle: Light
+        UIStatusBarStyle: UIStatusBarStyleDarkContent
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        NSPhotoLibraryAddUsageDescription: 用于把下载好的图片和视频存入相册。
+        NSPhotoLibraryUsageDescription: 用于预览你已下载到相册的素材。
+        # 下载器要访问的对象存储/CDN 里有相当一部分仍是 http（尤其网盘直链与 m3u8），
+        # ATS 必须放开，否则「解析成功但下载 0 字节」。上架 App Store 需改为按域白名单。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsArbitraryLoadsInWebContent: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSupportsIndirectInputEvents: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yunx.YunX
+        PRODUCT_NAME: YunX
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_KEY_CFBundleDisplayName: 云析
+
+schemes:
+  YunX:
+    build:
+      targets:
+        YunX: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

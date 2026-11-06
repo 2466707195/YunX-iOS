@@ -1,0 +1,53 @@
+name: Build iOS (unsigned ipa)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+
+jobs:
+  build:
+    name: Build unsigned ipa
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$XCODE" ]; then
+            echo "::error::没有找到任何 Xcode"
+            exit 1
+          fi
+          echo "selected Xcode: $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i "iphoneos" || true
+
+      - name: Install XcodeGen (pinned 2.38.0)
+        run: |
+          bash scripts/install-xcodegen.sh
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Build unsigned ipa
+        run: bash scripts/build-unsigned-ipa.sh
+
+      - name: Show ipa
+        run: ls -lh build/*.ipa
+
+      - name: Upload ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: |
+            build/*.ipa
+            build/Info.json
+          if-no-files-found: error
+          retention-days: 30
