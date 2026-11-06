@@ -162,6 +162,15 @@ static func plan(totalSize: Int64, chunkCount: Int, minChunkBytes: Int64) -> [Ch
 
 ---
 
+### 3.7 按钮与播放器
+
+- **操作条按钮统一小胶囊**：38pt 高、左右内边距 16、图标 14、图标↔文字 7、13pt semibold 墨色字。
+  同一行不会再出现「38pt 小胶囊 + 50pt 蓝字按钮」这种高矮配色都对不上的情况；
+  整行 CTA 才用 50pt 的 `PrimaryButton`。按钮文字一律不染品牌色，危险操作用玫瑰字。
+- **视频预览不用 `VideoPlayer`**：它在点击播放/暂停时会浮出系统控制层，压住自绘的顶栏。
+  改成 `PlayerLayerView`（`AVPlayerLayer`，不画任何 chrome），播放/暂停、±15 秒、点画面切换全部自绘，
+  同时设 `AVAudioSession(.playback)` 保证静音键拨下也有声。
+
 ## 4. 构建（无 Mac）
 
 ### 4.1 一键发到 GitHub 并编译

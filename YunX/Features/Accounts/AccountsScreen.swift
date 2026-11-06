@@ -583,10 +583,10 @@ struct BackupSheet: View {
             }
 
             HStack(spacing: 10) {
-                SmallTonalButton(text: "导出备份", systemIcon: "square.and.arrow.up", enabled: passphrase.count >= 6) {
+                SmallTonalButton(text: "导出备份", systemIcon: "square.and.arrow.up", enabled: passphrase.count >= 6, expands: true) {
                     exportBackup()
                 }
-                SmallTonalButton(text: "导入备份", systemIcon: "square.and.arrow.down", enabled: passphrase.count >= 6) {
+                SmallTonalButton(text: "导入备份", systemIcon: "square.and.arrow.down", enabled: passphrase.count >= 6, expands: true) {
                     showImporter = true
                 }
             }

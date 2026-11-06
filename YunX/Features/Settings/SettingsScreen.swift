@@ -379,10 +379,10 @@ struct ThreadSettingsSheet: View {
                 .padding(.horizontal, 6)
 
             HStack(spacing: 10) {
-                SmallTonalButton(text: "恢复默认", systemIcon: "arrow.counterclockwise") {
+                SmallTonalButton(text: "恢复默认", systemIcon: "arrow.counterclockwise", expands: true) {
                     settings.resetThreads()
                 }
-                GradientButton(text: "完成", systemIcon: "checkmark") {
+                SmallTonalButton(text: "完成", systemIcon: "checkmark", expands: true) {
                     dismiss()
                 }
             }

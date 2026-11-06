@@ -303,11 +303,10 @@ struct VideoResultScreen: View {
                 SmallTonalButton(text: "全部下载", systemIcon: "arrow.down.circle") {
                     resolve.downloadVideo(all: true)
                 }
-                GradientButton(
+                SmallTonalButton(
                     text: "下载所选",
                     systemIcon: "arrow.down.to.line",
-                    enabled: !resolve.selectedMediaIDs.isEmpty,
-                    expands: false
+                    enabled: !resolve.selectedMediaIDs.isEmpty
                 ) {
                     resolve.downloadVideo(all: false)
                 }

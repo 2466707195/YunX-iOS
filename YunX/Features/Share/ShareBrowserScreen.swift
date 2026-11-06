@@ -278,7 +278,7 @@ struct ShareBrowserScreen: View {
                     SmallTonalButton(text: "全选", systemIcon: "checkmark.circle") {
                         selectedIDs = Set(snapshot.entries.map { $0.id })
                     }
-                    GradientButton(text: "下载", systemIcon: "arrow.down.circle.fill", enabled: !selectedIDs.isEmpty, expands: false) {
+                    SmallTonalButton(text: "下载", systemIcon: "arrow.down.circle.fill", enabled: !selectedIDs.isEmpty) {
                         let targets = snapshot.entries.filter { selectedIDs.contains($0.id) }
                         Task {
                             await resolve.download(entries: targets)

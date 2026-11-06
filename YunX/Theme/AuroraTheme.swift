@@ -74,6 +74,8 @@ enum AuroraFont {
     static let labelLarge = Font.system(size: 14, weight: .semibold)
     static let labelMedium = Font.system(size: 12, weight: .semibold)
     static let labelSmall = Font.system(size: 11, weight: .medium)
+    /// 小胶囊按钮内的文案（13pt 半粗，比 labelMedium 稍大，38pt 高里读起来刚好）
+    static let controlLabel = Font.system(size: 13, weight: .semibold)
 }
 
 // MARK: - 间距与尺寸（8pt 网格）
@@ -85,7 +87,15 @@ enum AuroraMetrics {
     static let listBottomInset: CGFloat = 32  // 列表底部留白（Tab 栏的安全区由系统自动加，别再重复算）
     static let barBottomInset: CGFloat = 68   // 已废弃：自绘底栏已移除，保留常量只为兼容旧调用
     static let primaryButtonHeight: CGFloat = 50
-    static let smallButtonHeight: CGFloat = 38
+    /// 操作条里的小胶囊按钮高度（同一行按钮统一用这个）
+    static let controlButtonHeight: CGFloat = 38
+    /// 小胶囊按钮左右内边距：文字不贴边，也不显空
+    static let controlButtonHPadding: CGFloat = 16
+    /// 小胶囊按钮图标尺寸
+    static let controlButtonIconSize: CGFloat = 14
+    /// 小胶囊按钮「图标 ↔ 文字」间距
+    static let controlButtonIconSpacing: CGFloat = 7
+    static let smallButtonHeight: CGFloat = controlButtonHeight  // 旧名保留
     static let iconButtonSize: CGFloat = 44
 }
 

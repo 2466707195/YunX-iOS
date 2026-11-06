@@ -152,11 +152,10 @@ struct DriveScreen: View {
             SmallTonalButton(text: "全选", systemIcon: "checkmark.circle") {
                 drive.selectAll()
             }
-            GradientButton(
+            SmallTonalButton(
                 text: "下载",
                 systemIcon: "arrow.down.circle.fill",
-                enabled: !drive.selected.isEmpty,
-                expands: false
+                enabled: !drive.selected.isEmpty
             ) {
                 Task { await drive.downloadSelected() }
             }
@@ -211,10 +210,9 @@ struct DriveScreen: View {
                     title: "还没有登录网盘",
                     message: "登录夸克或 UC 后，可以在这里浏览网盘里的文件，勾选后直接下载。"
                 ) {
-                    GradientButton(
+                    SmallTonalButton(
                         text: "去登录",
-                        systemIcon: "person.crop.circle",
-                        expands: false
+                        systemIcon: "person.crop.circle"
                     ) {
                         model.tab = .accounts
                     }
