@@ -11,8 +11,8 @@ on:
 jobs:
   build:
     name: Build unsigned ipa
-    runs-on: macos-14
-    timeout-minutes: 30
+    runs-on: macos-15
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
