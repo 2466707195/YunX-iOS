@@ -137,6 +137,11 @@ struct DouyinParser: VideoParser {
                 notes.append("\(candidate.label):\(error)[\(outcome.diagnostics)]")
                 continue
             }
+            // 拿到的详情必须是这个作品：推荐位 / 短链串号都可能给回别人的数据
+            if let got = object["id"] as? String, !got.isEmpty, got != link.id {
+                notes.append("\(candidate.label):id不符(\(got))")
+                continue
+            }
 
             let images = (object["images"] as? [Any])?.compactMap { $0 as? String } ?? []
             let motions = (object["motions"] as? [Any])?.compactMap { $0 as? String } ?? []
@@ -427,6 +432,27 @@ struct DouyinParser: VideoParser {
                 || body.indexOf('该作品已删除') >= 0
                 || body.indexOf('页面不见了') >= 0
                 || body.indexOf('内容不可见') >= 0) return 'abort';
+            function inCommentNode(el) {
+              var node = el;
+              var depth = 0;
+              while (node && depth < 14) {
+                try {
+                  var mark = '';
+                  if (node.getAttribute) {
+                    mark += ' ' + (node.getAttribute('data-e2e') || '');
+                    mark += ' ' + (node.getAttribute('id') || '');
+                  }
+                  if (typeof node.className === 'string') mark += ' ' + node.className;
+                  mark = mark.toLowerCase();
+                  if (mark.indexOf('comment') >= 0) return true;
+                  if (mark.indexOf('emoji') >= 0) return true;
+                  if (mark.indexOf('reply') >= 0) return true;
+                } catch (e) {}
+                node = node.parentElement;
+                depth++;
+              }
+              return false;
+            }
             var imgs = document.querySelectorAll('img');
             for (var i = 0; i < imgs.length; i++) {
               var s = (imgs[i].currentSrc || imgs[i].src || '') + '';
@@ -434,6 +460,11 @@ struct DouyinParser: VideoParser {
               if (s.indexOf('WEBPC_RELATED') >= 0) continue;
               if (s.indexOf('pcweb_cover') >= 0) continue;
               if (s.indexOf('aweme-avatar') >= 0) continue;
+              // 评论区的表情包 / 图片评论跟作品图同一个 CDN：不排掉的话页面一渲染出
+              // 评论就「就绪」，取回来的全是表情包（用户实际踩到的就是这个）
+              if (/comment|emoji|sticker/i.test(s)) continue;
+              if ((imgs[i].naturalWidth || 0) > 0 && imgs[i].naturalWidth < 80) continue;
+              if (inCommentNode(imgs[i])) continue;
               var isWork = s.indexOf('aweme_images') >= 0 || s.indexOf('aweme-images') >= 0;
               if (isWork) return 'true';
               // 图文页可能不挂 aweme_images 的 tag，页面上除了作品图没有别的图，放宽即可
@@ -444,7 +475,9 @@ struct DouyinParser: VideoParser {
               var styled = document.querySelectorAll('[style*="background-image"]');
               for (var j = 0; j < styled.length; j++) {
                 var style = (styled[j].getAttribute('style') || '') + '';
-                if (style.indexOf('douyinpic') >= 0) return 'true';
+                if (style.indexOf('douyinpic') < 0) continue;
+                if (inCommentNode(styled[j])) continue;
+                return 'true';
               }
             }
             return 'false';
@@ -526,13 +559,14 @@ struct DouyinParser: VideoParser {
                 var root = JSON.parse(raw);
                 var detail = root.aweme_detail || root.awemeDetail || (root.data && root.data.aweme_detail) || null;
                 if (!detail && root.aweme_list && root.aweme_list.length) {
-                  // 个人页列表接口：优先挑 id 对得上的那条
+                  // 个人页 / 推荐流接口：只认 id 对得上的那条，宁可不取也不能拿错作品
                   for (var i = 0; i < root.aweme_list.length; i++) {
                     var it = root.aweme_list[i];
                     if (it && String(it.aweme_id) === TARGET_ID) { detail = it; break; }
                   }
-                  if (!detail) detail = root.aweme_list[0];
                 }
+                // 详情带 aweme_id 时必须与目标一致（短链串号 / 推荐位混入都会导致解析到别的作品）
+                if (detail && detail.aweme_id && String(detail.aweme_id) !== TARGET_ID) return null;
                 return detail;
               } catch (e) { return null; }
             }
@@ -578,6 +612,10 @@ struct DouyinParser: VideoParser {
                 if (src.indexOf('WEBPC_RELATED') >= 0) continue;
                 if (src.indexOf('pcweb_cover') >= 0) continue;
                 if (src.indexOf('aweme-avatar') >= 0) continue;
+                // 评论区的表情包 / 图片评论跟作品图同一个 CDN，只能从 URL 和位置两头排掉
+                if (/comment|emoji|sticker/i.test(src)) continue;
+                if (inComment(all[i])) continue;
+                if ((all[i].naturalWidth || 0) > 0 && all[i].naturalWidth < 80) continue;
                 var isWork = src.indexOf('aweme_images') >= 0 || src.indexOf('aweme-images') >= 0;
                 if (!isWork && !RELAX) continue;
                 var key = src.split('?')[0];
@@ -586,6 +624,29 @@ struct DouyinParser: VideoParser {
                 result.push(src);
               }
               return result;
+            }
+
+            /// 评论区的图必须排除：评论列表外面那层容器的 class / data-e2e 一定带 comment
+            function inComment(el) {
+              var node = el;
+              var depth = 0;
+              while (node && depth < 14) {
+                try {
+                  var mark = '';
+                  if (node.getAttribute) {
+                    mark += ' ' + (node.getAttribute('data-e2e') || '');
+                    mark += ' ' + (node.getAttribute('id') || '');
+                  }
+                  if (typeof node.className === 'string') mark += ' ' + node.className;
+                  mark = mark.toLowerCase();
+                  if (mark.indexOf('comment') >= 0) return true;
+                  if (mark.indexOf('emoji') >= 0) return true;
+                  if (mark.indexOf('reply') >= 0) return true;
+                } catch (e) {}
+                node = node.parentElement;
+                depth++;
+              }
+              return false;
             }
 
             var hooked = hookDetail();
@@ -647,7 +708,8 @@ struct DouyinParser: VideoParser {
               motions: motions,
               cover: (v && (firstUrl(v.cover) || firstUrl(v.origin_cover))) || '',
               src: src,
-              ssr: ssrNote
+              ssr: ssrNote,
+              id: String((d && d.aweme_id) || '')
             });
           } catch (e) {
             return JSON.stringify({ error: 'js: ' + e });
