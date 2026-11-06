@@ -63,8 +63,12 @@ xcodegen generate
 # 生成后立刻验证工程可读：能在真正编译前抓到「工程格式过新」这类问题
 echo ""
 echo "==> [1b/4] 校验工程可读性"
-if ! xcodebuild -list -project "${APP_NAME}.xcodeproj" >/dev/null 2>&1; then
-  echo "!! Xcode 打不开刚生成的工程。" >&2
+LIST_LOG="$(mktemp)"
+if ! xcodebuild -list -project "${APP_NAME}.xcodeproj" >"$LIST_LOG" 2>&1; then
+  echo "!! Xcode 打不开刚生成的工程。xcodebuild -list 的实际输出：" >&2
+  echo "----------------------------------------------------------------" >&2
+  tail -40 "$LIST_LOG" >&2
+  echo "----------------------------------------------------------------" >&2
   if [ -n "$XCODE_MAJOR" ] && [ "$XCODE_MAJOR" -lt 16 ]; then
     echo "   最可能的原因：XcodeGen 版本太新（>= 2.42 会写 objectVersion 77，只有 Xcode 16+ 能开）。" >&2
     echo "   当前 Xcode 是 ${XCODE_VER}。" >&2
