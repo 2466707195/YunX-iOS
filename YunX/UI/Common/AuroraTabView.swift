@@ -1,16 +1,21 @@
 import SwiftUI
 
-// === Aurora UI · Tab 页容器（iOS / SwiftUI）===
+// === Tab 页容器（Aurora UI · 原生实现）===
 //
-// 提供两套实现，按系统版本自动选：
-//   · iOS 18+   → 原生 `TabView` + `Tab`（iOS 26 上自动获得 Liquid Glass）
-//   · iOS 16/17 → 自绘悬浮底栏（和 Android 版视觉一致）
+// **底栏不自绘，交给系统。**
+//   · iOS 18+   → 原生 `TabView` + `Tab`
+//   · iOS 26+   → 同一份代码，系统自动给 Liquid Glass（悬浮胶囊、折射、边缘高光、滚动联动）
+//   · iOS 16/17 → 同一个 `TabView`，标签用 `.tabItem`（系统经典底栏）
 //
-// 为什么不只用原生 TabView：
-//   原生 TabView 从 iOS 18 才有 `Tab` 这个可用 API；16.4 的部署目标下必须留一条自绘退路。
-//   而且 Aurora UI 的底栏是「实白胶囊 + 选中项浅品牌底」，原生样式在低版本上对不上。
+// 这一版把之前的自绘玻璃胶囊（`AuroraGlassTabBar`）整段删掉了，原因：
+//   1. Liquid Glass 是系统级材质，`.ultraThinMaterial` 仿不出来（白底上就是一片发灰的磨砂），
+//      而且不跟随深色模式、放大字号、「降低透明度」辅助功能。
+//   2. 系统的 `tabBarMinimizeBehavior` / `tabViewBottomAccessory` / 用户自定义排序，
+//      全挂在系统控件上，自绘一个都拿不到。
+//   3. 自绘要自己处理安全区、键盘、点击穿透、拖动与点按手势分流，每个大版本都要重调
+//      （之前那个「拖过去又被点回去」就是这个坑）。
 //
-// 详见 references/ios-components.md
+// 唯一代价：`Tab` 不是 `View`，条件性角标做不到；真要动态角标就换 UIKit `UITabBarController`。
 
 // MARK: - 共享 spec
 
@@ -20,386 +25,20 @@ struct AuroraTabSpec<Value: Hashable>: Identifiable {
     let id: Value
     let title: String
 
-    /// 未选中图标。**必须用 outline 变体** ——
-    /// 原生 TabView 会自动把选中态换成 filled 变体，这里再给 filled 会导致常亮。
+    /// 图标。**必须 outline 变体**（`folder` 而不是 `folder.fill`），
+    /// 系统会自动把选中态换成 filled。
     let icon: String
 
-    /// 选中图标（仅 iOS 16/17 的自绘底栏用，原生 TabView 忽略）
-    let selectedIcon: String
-
-    /// 角标文案。`nil` 或空串都不显示。
-    let badge: String?
-
-    init(
-        id: Value,
-        title: String,
-        icon: String,
-        selectedIcon: String? = nil,
-        badge: String? = nil
-    ) {
+    init(id: Value, title: String, icon: String) {
         self.id = id
         self.title = title
         self.icon = icon
-        self.selectedIcon = selectedIcon
-            ?? (icon.hasSuffix(".fill") ? icon : icon + ".fill")
-        self.badge = badge
     }
 }
 
-// MARK: - 原生实现（iOS 18+）
+// MARK: - Tab 页宿主
 
-@available(iOS 18.0, *)
-struct AuroraTabView<Value: Hashable, Content: View>: View {
-
-    @Binding private var selection: Value
-    private let items: [AuroraTabSpec<Value>]
-    private let content: (Value) -> Content
-
-    init(
-        selection: Binding<Value>,
-        items: [AuroraTabSpec<Value>],
-        @ViewBuilder content: @escaping (Value) -> Content
-    ) {
-        self._selection = selection
-        self.items = items
-        self.content = content
-    }
-
-    var body: some View {
-        TabView(selection: $selection) {
-            ForEach(items) { item in
-                Tab(value: item.id, role: nil) {
-                    content(item.id)
-                } label: {
-                    // 用 Label 而不是 Tab("标题", systemImage:) ——
-                    // 后者首参是字面量友好的签名，传 String 变量不稳
-                    Label(item.title, systemImage: item.icon)
-                }
-            }
-        }
-        // 选中态染成品牌色；图标、文字都会跟着变
-        .tint(Aurora.brand)
-    }
-}
-
-// MARK: - 关于角标（badge）
-//
-// 原生 Tab 路径**不支持条件性角标**，两个原因：
-//   1. `Tab` 不是 `View`（没有 `.modifier`），所以不能用 ViewModifier 包一层条件。
-//   2. `TabContent.badge(_:)` 的返回类型是 `some TabContent<Self.TabValue>` —— 不透明类型。
-//      写 `if hasBadge { tab.badge(x) } else { tab }` 时两个分支底层类型不同，
-//      无法收敛到同一个 opaque type，编译器直接报错。
-//
-// 变通办法：
-//   · 要角标就在 TabView 那里直接 `.badge("3")` 写死（无条件的）
-//   · 或者走 iOS 16/17 的自绘底栏 `AuroraLegacyTabBar` —— 它是普通 HStack，
-//     角标想怎么画怎么画（`AuroraTabSpec.badge` 就是给它用的）
-//   · 或者自己维护一个 UITabBarController 包在 UIViewControllerRepresentable 里，
-//     用 `tabBarItem.badgeValue` 完全控制
-
-// MARK: - 玻璃胶囊底栏（可左右拖动）
-
-/// 测量胶囊内容区宽度，用来自算每一项的等分宽度。
-private struct AuroraTabBarWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// 透明玻璃胶囊底栏 —— 取代早期的「实白圆角条 + 圆形选中底」。
-///
-/// 视觉：
-///   · 外层是一枚悬浮的**无色玻璃**胶囊，背景极光直接透上来，没有实底
-///   · 选中的那一项由一块稍亮的玻璃块承托（不是色块），颜色只出现在图标和文字上
-///
-/// 交互：
-///   · **点按**某项 → 切换；玻璃块以 spring 滑到目标位置
-///   · **在胶囊上左右拖** → 玻璃块实时跟手平移，松手按「实际位移 + 速度预测」吸附到最近的项
-///   · 拖到两端有硬边界，不会越出胶囊
-///
-/// 这里没有用 `Button` 承载每一项：胶囊整体挂了一个 `DragGesture(minimumDistance: 0)`，
-/// 点击与拖动由同一个手势分流（位移 ≤ 5pt 视为点击）。嵌套 Button 在拖动手势下
-/// 会同时触发 tap，导致「拖到第 3 项松手却又跳回被点的那项」。
-struct AuroraGlassTabBar<Value: Hashable, Content: View>: View {
-
-    @Binding var selection: Value
-    let items: [AuroraTabSpec<Value>]
-    let content: (Value) -> Content
-
-    /// 拖动时的实时位移（相对当前选中项的左边缘）
-    @State private var dragTranslation: CGFloat = 0
-    /// 是否已越过点击阈值：决定松手时按「点击」还是「拖动吸附」处理
-    @State private var isDragging = false
-    /// 按下但还没开始拖的那一项，用于轻微缩放反馈
-    @State private var pressedIndex: Int?
-    /// 胶囊内容区（不含内边距）的宽度
-    @State private var contentWidth: CGFloat = 0
-
-    /// 胶囊高度
-    private let barHeight: CGFloat = 60
-    /// 图标圆的直径
-    private let iconDiameter: CGFloat = 26
-    /// 选中玻璃块比胶囊高出的量（上下各一半），做出「凸出来」的立体感
-    private let indicatorOverflow: CGFloat = 8
-    /// 拖动判定阈值
-    private let dragThreshold: CGFloat = 5
-
-    private var snap: Animation { .spring(response: 0.34, dampingFraction: 0.82) }
-
-    init(
-        selection: Binding<Value>,
-        items: [AuroraTabSpec<Value>],
-        @ViewBuilder content: @escaping (Value) -> Content
-    ) {
-        self._selection = selection
-        self.items = items
-        self.content = content
-    }
-
-    var body: some View {
-        content(selection)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // 页面本身瞬时切换：这里只让玻璃块做位移动画，
-            // 否则整页会跟着 withAnimation 淡入淡出，切 Tab 会有拖影感。
-            .transition(.identity)
-            // 底栏用 safeAreaInset 交给系统处理：内容会自动让出高度，
-            // 滑到底不会被玻璃条盖住（这是 ZStack 浮层做不到的）。
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                bar
-            }
-            .preferredColorScheme(.light)
-    }
-
-    // MARK: 布局
-
-    private var currentIndex: Int {
-        items.firstIndex(where: { $0.id == selection }) ?? 0
-    }
-
-    /// 单项等分宽度
-    private var itemWidth: CGFloat {
-        guard !items.isEmpty, contentWidth > 0 else { return 0 }
-        return contentWidth / CGFloat(items.count)
-    }
-
-    /// 玻璃块宽度：与单项等宽，左右直接贴着项边界（与设计稿一致）
-    private var indicatorWidth: CGFloat {
-        itemWidth
-    }
-
-    /// 玻璃块的横向位置：当前项基准位 + 拖动位移，并夹在首尾之间
-    private var indicatorX: CGFloat {
-        guard itemWidth > 0, !items.isEmpty else { return 0 }
-        let lastGap = CGFloat(max(0, items.count - 1)) * itemWidth
-        let raw = CGFloat(currentIndex) * itemWidth + dragTranslation
-        return min(max(raw, 0), lastGap)
-    }
-
-    private var bar: some View {
-        ZStack(alignment: .leading) {
-            indicator
-
-            HStack(spacing: 0) {
-                ForEach(items.indices, id: \.self) { index in
-                    tabItem(items[index], index: index)
-                }
-            }
-            .frame(height: barHeight)
-            .contentShape(Rectangle())
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: AuroraTabBarWidthKey.self,
-                        value: proxy.size.width
-                    )
-                }
-            )
-            .gesture(dragGesture)
-        }
-        .frame(height: barHeight)
-        .background(
-            // 无色玻璃：材质 + 极淡白色高光，不掺品牌色
-            GlassSurface(shape: Capsule(style: .continuous), shadowRadius: 18, highlight: 0.16)
-        )
-        .contentShape(Capsule(style: .continuous))
-        .onPreferenceChange(AuroraTabBarWidthKey.self) { width in
-            if abs(width - contentWidth) > 0.5 { contentWidth = width }
-        }
-        .padding(.horizontal, AuroraMetrics.pagePadding)
-        .padding(.top, 8)
-        // 玻璃块上下各溢出 4pt，留出这段空间，避免贴到上一页内容
-        .padding(.bottom, 8)
-    }
-
-    /// 承托选中项的玻璃块：空心描边胶囊 + 极淡填充 + 柔和投影，比容器高出一圈
-    ///
-    /// 拆成几个小属性而不是一条长链：SwiftUI 的类型检查器对「多层 overlay + 内联渐变」
-    /// 的表达式很容易超时（`unable to type-check in reasonable time`）。
-    private var indicator: some View {
-        Capsule(style: .continuous)
-            .fill(Color.white.opacity(isDragging ? 0.80 : 0.66))
-            .overlay(Capsule(style: .continuous).fill(indicatorFill))
-            .overlay(Capsule(style: .continuous).strokeBorder(indicatorStroke, lineWidth: 1.2))
-            .shadow(
-                color: Color.black.opacity(isDragging ? 0.13 : 0.09),
-                radius: isDragging ? 12 : 9,
-                x: 0,
-                y: 3
-            )
-            .frame(width: indicatorWidth, height: barHeight + indicatorOverflow)
-            .opacity(itemWidth > 0 ? 1 : 0)
-    }
-
-    private var indicatorFill: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(isDragging ? 0.34 : 0.22),
-                Color.white.opacity(0.02)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private var indicatorStroke: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(0.98),
-                Color.white.opacity(0.42)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-
-    @ViewBuilder
-    private func tabItem(_ item: AuroraTabSpec<Value>, index: Int) -> some View {
-        let active = index == currentIndex
-        let pressed = pressedIndex == index
-
-        VStack(spacing: 3) {
-            ZStack {
-                Circle()
-                    .fill(active ? Aurora.brand : Aurora.ink)
-                Image(systemName: active ? item.selectedIcon : item.icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white)
-            }
-            .frame(width: iconDiameter, height: iconDiameter)
-
-            Text(item.title)
-                .font(.system(size: 11, weight: active ? .semibold : .medium))
-                .lineLimit(1)
-                .foregroundStyle(active ? Aurora.brand : Aurora.ink)
-        }
-        // 选中只染字色与圆底，不铺大面积色块 —— 保持「无色玻璃」的统一观感
-        .frame(maxWidth: .infinity)
-        .frame(height: barHeight)
-        .scaleEffect(pressed ? 0.92 : 1)
-        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: pressed)
-        .overlay(alignment: .top) {
-            if let badge = item.badge, !badge.isEmpty {
-                Text(badge)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 4.5)
-                    .padding(.vertical, 1)
-                    .background(Capsule(style: .continuous).fill(Aurora.rose))
-                    .offset(x: 14, y: 3)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.title)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAddTraits(active ? .isSelected : AccessibilityTraits())
-        .accessibilityAction { select(index: index) }
-    }
-
-    // MARK: 手势
-
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                // 还没越过阈值：当作「按下」，只做缩放反馈
-                if !isDragging, abs(value.translation.width) <= dragThreshold {
-                    let hit = index(at: value.startLocation.x)
-                    if pressedIndex != hit { pressedIndex = hit }
-                    return
-                }
-                if !isDragging {
-                    isDragging = true
-                    pressedIndex = nil
-                }
-                dragTranslation = value.translation.width
-            }
-            .onEnded { value in
-                guard !items.isEmpty else {
-                    isDragging = false
-                    return
-                }
-                let from = currentIndex
-                pressedIndex = nil
-
-                guard isDragging else {
-                    // 位移没过阈值 → 点击：落在哪一项就切到哪一项
-                    let target = index(at: value.location.x)
-                    isDragging = false
-                    select(index: target)
-                    return
-                }
-
-                // 实际位移 + 甩动速度的预测段（predicted - translation 就是速度带来的增量），
-                // 取一半作为吸附倾向，避免快速轻扫一下跳过两格。
-                let fling = value.predictedEndTranslation.width - value.translation.width
-                let base = itemWidth * CGFloat(from)
-                let projected = base + value.translation.width + fling * 0.5
-                let raw = itemWidth > 0 ? projected / itemWidth : CGFloat(from)
-                let target = min(max(Int(raw.rounded()), 0), items.count - 1)
-
-                isDragging = false
-                animate {
-                    self.dragTranslation = 0
-                    if target != from { self.selection = self.items[target].id }
-                }
-            }
-    }
-
-    /// 手势横坐标 → 项下标
-    private func index(at x: CGFloat) -> Int {
-        guard itemWidth > 0, !items.isEmpty else { return 0 }
-        let raw = Int((x / itemWidth).rounded(.down))
-        return min(max(raw, 0), items.count - 1)
-    }
-
-    private func select(index: Int) {
-        guard items.indices.contains(index) else { return }
-        pressedIndex = nil
-        let id = items[index].id
-        guard id != selection else { return }
-        animate { selection = id }
-    }
-
-    private func animate(_ body: () -> Void) {
-        withAnimation(snap) { body() }
-    }
-}
-
-/// 旧名兼容：早期只有「实白胶囊」版本时叫 `AuroraLegacyTabBar`。
-typealias AuroraLegacyTabBar<Value: Hashable, Content: View> = AuroraGlassTabBar<Value, Content>
-
-// MARK: - 统一入口
-
-/// Tab 页宿主：按系统版本自动选原生 TabView 或自绘底栏。
-///
-/// ```swift
-/// AuroraTabHost(selection: $tab, items: [
-///     AuroraTabSpec(id: AppTab.home, title: "首页", icon: "house"),
-///     AuroraTabSpec(id: AppTab.drive, title: "网盘", icon: "cloud"),
-/// ]) { tab in
-///     switch tab { ... }
-/// }
-/// ```
+/// Tab 页宿主：内部就是一块原生 `TabView`，iOS 26 上自动获得 Liquid Glass。
 struct AuroraTabHost<Value: Hashable, Content: View>: View {
 
     @Binding private var selection: Value
@@ -418,9 +57,39 @@ struct AuroraTabHost<Value: Hashable, Content: View>: View {
 
     var body: some View {
         if #available(iOS 18.0, *) {
-            AuroraTabView(selection: $selection, items: items, content: content)
+            modernTabView
         } else {
-            AuroraLegacyTabBar(selection: $selection, items: items, content: content)
+            legacyTabView
         }
+    }
+
+    // MARK: iOS 18+ / 26：原生 Tab
+
+    @available(iOS 18.0, *)
+    private var modernTabView: some View {
+        TabView(selection: $selection) {
+            ForEach(items) { item in
+                Tab(value: item.id, role: nil) {
+                    content(item.id)
+                } label: {
+                    Label(item.title, systemImage: item.icon)
+                }
+            }
+        }
+        // 只染选中色；玻璃底色由系统决定，不要再设背景
+        .tint(Aurora.brand)
+    }
+
+    // MARK: iOS 16/17：同一个 TabView，用 .tabItem
+
+    private var legacyTabView: some View {
+        TabView(selection: $selection) {
+            ForEach(items) { item in
+                content(item.id)
+                    .tabItem { Label(item.title, systemImage: item.icon) }
+                    .tag(item.id)
+            }
+        }
+        .tint(Aurora.brand)
     }
 }

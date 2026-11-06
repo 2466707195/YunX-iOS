@@ -43,22 +43,13 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            AuroraBackdrop()
-
-            AuroraGlassTabBar(selection: $model.tab, items: tabItems) { current in
-                Group {
-                    switch current {
-                    case .resolve:
-                        ResolveScreen()
-                    case .drive:
-                        DriveScreen()
-                    case .download:
-                        DownloadScreen()
-                    case .accounts:
-                        AccountsScreen()
-                    case .settings:
-                        SettingsScreen()
-                    }
+            // 底栏交给系统：iOS 18+ 原生 Tab，iOS 26+ 自动 Liquid Glass。
+            // 背景放进每个 Tab 的内容里 —— 玻璃需要有东西可折射，
+            // 包在 TabView 外面会在滚动时透出白底。
+            AuroraTabHost(selection: $model.tab, items: tabItems) { current in
+                ZStack {
+                    AuroraBackdrop()
+                    screen(for: current)
                 }
             }
 
@@ -72,6 +63,22 @@ struct RootView: View {
             if phase == .active {
                 model.checkClipboard()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func screen(for tab: AppTab) -> some View {
+        switch tab {
+        case .resolve:
+            ResolveScreen()
+        case .drive:
+            DriveScreen()
+        case .download:
+            DownloadScreen()
+        case .accounts:
+            AccountsScreen()
+        case .settings:
+            SettingsScreen()
         }
     }
 }

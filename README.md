@@ -48,10 +48,10 @@ YunX/
 │   └── upload-to-qnq.py              # 上传到手机「全能签」无线传输地址
 └── YunX/
     ├── App/
-    │   ├── YunXApp.swift             # @main、四 Tab 容器、Toast 层
+    │   ├── YunXApp.swift             # @main、五 Tab 容器（原生 TabView）、Toast 层
     │   └── AppModel.swift            # 全局状态机，聚合四个子系统
     ├── Theme/                        # Aurora 设计系统（色板/字阶/日期格式）
-    ├── UI/Common/                    # 玻璃、按钮、输入框、Tab、YunX 专用组件
+    ├── UI/Common/                    # 玻璃、按钮、输入框、Tab 宿主、YunX 专用组件
     ├── Core/
     │   ├── Model/                    # ShareModels / VideoModels / DownloadModels / AccountModels
     │   ├── Network/                  # 解析层（见下）

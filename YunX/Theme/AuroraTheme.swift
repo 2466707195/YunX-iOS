@@ -82,8 +82,8 @@ enum AuroraMetrics {
     static let pagePadding: CGFloat = 14      // 页面左右边距
     static let cardPadding: CGFloat = 16      // 卡片内边距
     static let cardSpacing: CGFloat = 10      // 卡片间距
-    static let listBottomInset: CGFloat = 168 // 列表底部留白（避开底部操作条）
-    static let barBottomInset: CGFloat = 68   // 底部导航条占用的高度（含留白）
+    static let listBottomInset: CGFloat = 32  // 列表底部留白（Tab 栏的安全区由系统自动加，别再重复算）
+    static let barBottomInset: CGFloat = 68   // 已废弃：自绘底栏已移除，保留常量只为兼容旧调用
     static let primaryButtonHeight: CGFloat = 50
     static let smallButtonHeight: CGFloat = 38
     static let iconButtonSize: CGFloat = 44

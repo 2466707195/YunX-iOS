@@ -13,7 +13,8 @@ import UIKit
 /// - `loaded` 且有内容 → 列表
 ///
 /// 多选操作条放在**顶部**（面包屑下方）而不是底部：
-/// Tab 胶囊已经占了底部，再来一条玻璃条，两条中间会漏出滚动内容（这坑在 `AuroraScreen` 里有记录）。
+/// 底部是系统 Tab 栏（iOS 26 起是悬浮玻璃胶囊），再压一条玻璃条会叠在一起、
+/// 中间那道缝还会漏出滚动内容（这坑在 `AuroraScreen` 里有记录）。
 struct DriveScreen: View {
 
     @EnvironmentObject private var model: AppModel
