@@ -1,0 +1,10 @@
+# 仓库里的文本文件统一用 LF：云端是 macOS/Linux，CRLF 曾导致
+# XcodeGen 生成的工程在 xcodebuild -list 阶段打不开。
+* text=auto eol=lf
+
+# 二进制资源不要做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ipa binary
+*.xcassets binary
