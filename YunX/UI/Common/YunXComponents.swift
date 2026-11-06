@@ -415,39 +415,52 @@ struct RemoteImageTile: View {
     @State private var failed = false
 
     var body: some View {
-        GeometryReader { geo in
-            let side = min(geo.size.width, geo.size.height)
-            let radius = AuroraMetrics.goldenRadius(for: side)
-            ZStack {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(Aurora.surfaceVariant)
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
-                } else {
-                    VStack(spacing: 6) {
-                        Image(systemName: failed ? systemIcon : "photo")
-                            .font(.system(size: max(16, side * 0.14)))
-                            .foregroundStyle(Aurora.muted)
-                        if !failed {
-                            ProgressView().scaleEffect(0.7).tint(Aurora.muted)
-                        }
+        // 顺序很关键：先用一个零尺寸的透明色让 aspectRatio 把「宽度」换算成「高度」，
+        // 再用 overlay 去读已经定好的尺寸。
+        // 反过来（GeometryReader 当底座、外面套 aspectRatio）在 LazyVGrid 里拿不到
+        // 确定的高度提案，格子会被拉成细条或高度为 0 —— 那正是「大小不一、错落不齐」。
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                GeometryReader { geo in
+                    tile(side: min(geo.size.width, geo.size.height))
+                }
+            }
+            .contentShape(Rectangle())
+            .task(id: url) { await reload() }
+    }
+
+    /// 边长已确定，圆角按黄金比例直接由边长算出，不再做二级测量。
+    private func tile(side: CGFloat) -> some View {
+        let radius = AuroraMetrics.goldenRadius(for: side)
+        return ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Aurora.surfaceVariant)
+            if let image {
+                // 双向 frame + clipped：任何宽高比的图都正好铺满这块方格、居中裁切，
+                // 不会像只锁高度那样横向溢出、把相邻格子挤歪。
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: side, height: side)
+                    .clipped()
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: failed ? systemIcon : "photo")
+                        .font(.system(size: max(16, side * 0.14)))
+                        .foregroundStyle(Aurora.muted)
+                    if !failed {
+                        ProgressView().scaleEffect(0.7).tint(Aurora.muted)
                     }
                 }
             }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(isHighlighted ? Aurora.brand : Color.clear, lineWidth: 2)
-            )
         }
-        // 方块：宽度由网格给，高度跟着等于宽度（不同屏幕下始终是正方形）
-        .aspectRatio(1, contentMode: .fit)
-        .task(id: url) { await reload() }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(isHighlighted ? Aurora.brand : Color.clear, lineWidth: 2)
+        )
     }
 
     private func reload() async {
