@@ -90,7 +90,16 @@ final class ResolveCoordinator: ObservableObject {
     /// 粘贴后立刻给出「识别到哪个平台」，让用户在点解析之前就知道对不对
     func detect() {
         let target = ResolveRouter.route(input)
-        detectedLabel = target == .unknown ? "" : ResolveRouter.describe(target)
+        if case .unknown = target {
+            detectedLabel = ""
+        } else {
+            detectedLabel = ResolveRouter.describe(target)
+        }
+    }
+
+    /// 清空输入时一并清掉识别提示（`detectedLabel` 对外只读，由这里统一改）
+    func clearDetectedLabel() {
+        detectedLabel = ""
     }
 
     // MARK: 主流程
@@ -274,7 +283,7 @@ final class ResolveCoordinator: ObservableObject {
     }
 
     func refreshShare() async {
-        guard let snapshot else { return }
+        guard snapshot != nil else { return }
         await goToDir(index: dirStack.count - 1)
     }
 

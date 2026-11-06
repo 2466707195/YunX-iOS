@@ -66,7 +66,7 @@ struct ResolveScreen: View {
                 if !resolve.input.isEmpty {
                     GlassIconButton(systemIcon: "xmark", tint: Aurora.inkSoft, diameter: 32, iconSize: 12) {
                         resolve.input = ""
-                        resolve.detectedLabel = ""
+                        resolve.clearDetectedLabel()
                     }
                 }
             }

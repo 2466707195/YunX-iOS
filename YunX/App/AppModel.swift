@@ -136,7 +136,8 @@ final class AppModel: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
         guard text != lastClipboardText else { return }
         lastClipboardText = text
-        guard ResolveRouter.route(text) != .unknown else { return }
+        // ResolvedTarget 带关联值，不是 Equatable，只能按 case 判
+        if case .unknown = ResolveRouter.route(text) { return }
         clipboardSuggestion = text
     }
 

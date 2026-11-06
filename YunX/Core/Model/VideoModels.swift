@@ -112,6 +112,8 @@ enum VideoMediaKind: String, Codable {
     case video
     case image
     case audio
+    /// 纯文本（订阅文件、说明、字幕等）。预览页用等宽字体直接显示。
+    case text
 }
 
 /// 一条可下载的媒体。

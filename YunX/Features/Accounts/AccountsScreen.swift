@@ -53,6 +53,8 @@ enum AccountTarget: Identifiable, Equatable {
         switch self {
         case .pan(.quark): return "quark.cn"
         case .pan(.uc): return "uc.cn"
+        // 其余网盘还没有适配器，也就没有可提示的 Cookie 来源
+        case .pan: return ""
         case .video(let platform): return platform.cookieDomain
         }
     }
