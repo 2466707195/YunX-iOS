@@ -45,7 +45,7 @@ struct RootView: View {
         ZStack(alignment: .top) {
             AuroraBackdrop()
 
-            AuroraLegacyTabBar(selection: $tab, items: tabItems) { current in
+            AuroraGlassTabBar(selection: $tab, items: tabItems) { current in
                 Group {
                     switch current {
                     case .resolve:
