@@ -11,12 +11,14 @@ import Foundation
 /// 要么渲染进 DOM，要么靠页面自己发 `aweme/v1/web/aweme/detail` 才拿回来。
 /// 这两步都只有「真的把页面跑起来」才能过 —— 在解析器里改字段名是没用的。
 ///
-/// 所以主路线是 [HeadlessWebView]：
-/// 1. 打开 `www.douyin.com/{video|note}/<id>`（分享域只是 302 到这里，直接开终点可省一跳）；
-/// 2. 文档开始前挂 XHR 钩子，把页面**自己发出的**详情响应原文存进 `window.__yunxAwemeDetail`；
-/// 3. 就绪判据 = 钩子拿到详情 **或** DOM 里出现真正的作品图（封面/相关推荐不算）；
-/// 4. 取数优先级：SSR `#RENDER_DATA`（图文/动图的完整清单，动图只有这条路能拿）→ XHR 钩子
-///    （视频直链在这里）→ DOM 兜底。
+/// 视频 和 图文（note / slides）**是两条不同的前端路由**，同一个 id 走错路由页面会空着，
+/// 所以这里按「多通道 + 早退 + 诊断」来跑：
+/// 1. `www.douyin.com/{note|video}/<id>`（桌面 UA，PC 详情页）；
+/// 2. `www.iesdouyin.com/share/{note|video}/<id>/?from_ssr=1`（手机 UA，移动分享页）；
+/// 3. 还不行就把另一种路由也试一遍（用户从短链进来时，类型可能判断错）。
+///
+/// 注入（文档开始前）：XHR 钩子 + `fetch` 钩子 + `navigator.platform` 伪装。
+/// 取数优先级：钩子拿到的详情（视频直链 / 图文图集都在里面）→ SSR `#RENDER_DATA` → DOM。
 ///
 /// HTTP + SSR 那条老路只作回退保留（抖音万一回退回去时还有用）。
 struct DouyinParser: VideoParser {
@@ -37,12 +39,13 @@ struct DouyinParser: VideoParser {
         }
 
         // ① 主路线：隐藏 WebView（纯 HTTP 已经拿不到数据）
-        if let payload = await fetchViaWebView(link: link) {
+        let (payload, notes) = await fetchViaWebView(link: link)
+        if let payload {
             return build(link: link, payload: payload)
         }
 
-        // ② 回退：老的 SSR 路线
-        return try await parseViaSSR(link: link, cookie: cookie)
+        // ② 回退：老的 SSR 路线（报错时带上各通道的实测状态，方便一眼定位）
+        return try await parseViaSSR(link: link, cookie: cookie, webNotes: notes)
     }
 
     // MARK: WebView 路线
@@ -57,38 +60,100 @@ struct DouyinParser: VideoParser {
         var cover: String
     }
 
-    private func fetchViaWebView(link: DetectedVideoLink) async -> WebPayload? {
-        let type = link.url.contains("/note/") ? "note" : "video"
-        let url = "https://www.douyin.com/\(type)/\(link.id)"
-        let json = await HeadlessWebView.shared.loadAndExtract(
-            url: url,
-            userAgent: webUA,
-            readyCheckJS: Self.readyCheckJS,
-            extractJS: Self.extractJS,
-            timeout: 40,
-            documentStartScripts: [Self.xhrHookJS] + WebViewDisguise.scripts(for: webUA)
-        )
-        guard let json,
-              let data = json.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return nil
+    /// 一次尝试 = 一个落地页 + 一套取数脚本
+    private struct PageCandidate {
+        let label: String
+        let url: String
+        let userAgent: String
+        /// 图文 / 动图页的图只有「作品图」一种，DOM 兜底可以放宽（视频页不行：封面和推荐图会混进来）
+        let relaxImages: Bool
+    }
+
+    private func candidates(for link: DetectedVideoLink) -> [PageCandidate] {
+        // ★ 类型只能从链接判断：`share/note/…`、`share/slides/…` 都是图文
+        let isNote = link.url.contains("/note/") || link.url.contains("/slides/")
+        let primary = isNote ? "note" : "video"
+        let secondary = isNote ? "video" : "note"
+        return [
+            PageCandidate(
+                label: "pc-\(primary)",
+                url: "https://www.douyin.com/\(primary)/\(link.id)",
+                userAgent: webUA,
+                relaxImages: primary == "note"
+            ),
+            PageCandidate(
+                label: "share-\(primary)",
+                url: "https://www.iesdouyin.com/share/\(primary)/\(link.id)/?from_ssr=1&region=CN",
+                userAgent: HTTPClient.uaMobile,
+                relaxImages: primary == "note"
+            ),
+            PageCandidate(
+                label: "pc-\(secondary)",
+                url: "https://www.douyin.com/\(secondary)/\(link.id)",
+                userAgent: webUA,
+                relaxImages: secondary == "note"
+            )
+        ]
+    }
+
+    /// 依次尝试；返回 payload（成功时）和每个通道的实测说明（失败时拼进报错）。
+    private func fetchViaWebView(link: DetectedVideoLink) async -> (WebPayload?, [String]) {
+        var notes: [String] = []
+        // 总预算 55s：单通道最多 26s，剩下的时间留给下一个通道
+        let deadline = Date().addingTimeInterval(55)
+
+        for candidate in candidates(for: link) {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 8 else {
+                notes.append("\(candidate.label):预算用尽")
+                break
+            }
+
+            let json = await HeadlessWebView.shared.loadAndExtract(
+                url: candidate.url,
+                userAgent: candidate.userAgent,
+                readyCheckJS: Self.readyCheckJS(relaxImages: candidate.relaxImages),
+                extractJS: Self.extractJS(awemeID: link.id, relaxImages: candidate.relaxImages),
+                timeout: min(26, remaining),
+                // 图文页的图是懒加载的，多等一会儿让轮播把整册铺开
+                settle: candidate.relaxImages ? 0.9 : 0.3,
+                documentStartScripts: [Self.detailHookJS] + WebViewDisguise.scripts(for: candidate.userAgent)
+            )
+
+            guard let json,
+                  let data = json.data(using: .utf8),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                notes.append("\(candidate.label):未就绪")
+                continue
+            }
+            if let error = object["error"] as? String, !error.isEmpty {
+                notes.append("\(candidate.label):\(error)")
+                continue
+            }
+
+            let images = (object["images"] as? [Any])?.compactMap { $0 as? String } ?? []
+            let motions = (object["motions"] as? [Any])?.compactMap { $0 as? String } ?? []
+            let video = JSONSearch.str(object, "video")
+            guard !images.isEmpty || !video.isEmpty else {
+                let src = JSONSearch.str(object, "src")
+                let ssr = JSONSearch.str(object, "ssr")
+                notes.append("\(candidate.label):无媒体(src=\(src.isEmpty ? "?" : src),ssr=\(ssr.isEmpty ? "?" : ssr))")
+                continue
+            }
+
+            notes.append("\(candidate.label):ok(src=\(JSONSearch.str(object, "src")))")
+            return (WebPayload(
+                title: JSONSearch.str(object, "title"),
+                desc: JSONSearch.str(object, "desc"),
+                author: JSONSearch.str(object, "author"),
+                video: video,
+                images: images,
+                motions: motions,
+                cover: JSONSearch.str(object, "cover")
+            ), notes)
         }
-        if let error = object["error"] as? String, !error.isEmpty { return nil }
 
-        let images = (object["images"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let motions = (object["motions"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let video = JSONSearch.str(object, "video")
-        guard !images.isEmpty || !video.isEmpty else { return nil }
-
-        return WebPayload(
-            title: JSONSearch.str(object, "title"),
-            desc: JSONSearch.str(object, "desc"),
-            author: JSONSearch.str(object, "author"),
-            video: video,
-            images: images,
-            motions: motions,
-            cover: JSONSearch.str(object, "cover")
-        )
+        return (nil, notes)
     }
 
     private func build(link: DetectedVideoLink, payload: WebPayload) -> VideoParseResult {
@@ -131,7 +196,7 @@ struct DouyinParser: VideoParser {
             author: payload.author,
             cover: TextUtil.httpsURL(payload.cover.isEmpty ? (payload.images.first ?? "") : payload.cover),
             text: payload.desc.isEmpty ? payload.title : payload.desc,
-            url: "https://www.douyin.com/video/\(link.id)",
+            url: payload.images.isEmpty ? "https://www.douyin.com/video/\(link.id)" : "https://www.douyin.com/note/\(link.id)",
             medias: medias
         )
     }
@@ -146,7 +211,10 @@ struct DouyinParser: VideoParser {
 
     // MARK: HTTP + SSR 回退
 
-    private func parseViaSSR(link: DetectedVideoLink, cookie: String) async throws -> VideoParseResult {
+    private func parseViaSSR(link: DetectedVideoLink, cookie: String, webNotes: [String]) async throws -> VideoParseResult {
+        let isNote = link.url.contains("/note/") || link.url.contains("/slides/")
+        let webDetail = webNotes.isEmpty ? "未尝试" : webNotes.joined(separator: " / ")
+
         do {
             var headers: [String: String] = [
                 "User-Agent": HTTPClient.uaMobile,
@@ -155,27 +223,30 @@ struct DouyinParser: VideoParser {
             ]
             if !cookie.isEmpty { headers["Cookie"] = cookie }
 
-            let shareURL = "https://www.iesdouyin.com/share/video/\(link.id)/"
+            // ★ 图文必须走 share/note，视频必须走 share/video：走错路由页面能开但没有作品数据
+            let type = isNote ? "note" : "video"
+            let shareURL = "https://www.iesdouyin.com/share/\(type)/\(link.id)/?from_ssr=1&region=CN"
             let response = try await HTTPClient.shared.get(shareURL, headers: headers)
             guard response.isOK else {
-                throw VideoParseError(.blocked, "分享页返回 \(response.status)")
+                throw VideoParseError(.blocked, "分享页返回 \(response.status)（web: \(webDetail)）")
             }
             let html = response.text
             guard let payload = HTMLPayload.jsonObject(afterAny: ["window._ROUTER_DATA"], in: html) else {
-                throw VideoParseError(.unknown, "抖音分享页里没有 window._ROUTER_DATA（被风控拦成挑战页或平台改版）")
+                throw VideoParseError(.unknown, "抖音分享页里没有 window._ROUTER_DATA（被风控拦成挑战页或平台改版）[web: \(webDetail)]")
             }
 
-            let page = JSONSearch.dictionary(in: payload, path: ["loaderData", "video_(id)/page"])
-            let fallbackPage = JSONSearch.dictionary(in: payload, path: ["loaderData", "note_(id)/page"])
-            let scoped = page.isEmpty ? fallbackPage : page
-            let info = JSONSearch.dictionary(in: scoped, path: ["videoInfoRes"])
+            let page = JSONSearch.dictionary(in: payload, path: ["loaderData", "\(type)_(id)/page"])
+            let info = JSONSearch.dictionary(in: page, path: ["videoInfoRes"])
             let items = JSONSearch.array(in: info, path: ["item_list"])
             guard let item = items.first as? [String: Any] else {
                 // 服务端没给作品数据：页面本身不报错（HTTP 200），只是没有 videoInfoRes。
                 // 把实测到的事实带进报错里，让「哪层缺了 / id 对不对 / 是否被判成爬虫」一眼可辨。
-                let echoed = JSONSearch.str(scoped, "itemId").isEmpty ? "缺失" : JSONSearch.str(scoped, "itemId")
-                let detail = "videoInfoRes=\(info.isEmpty ? "缺失" : "存在"), item_list=\(items.count), itemId=\(echoed), 请求id=\(link.id)"
-                throw VideoParseError(.unknown, "抖音没有返回该作品的数据（页面脚本没跑起来 / 作品不可见）[\(detail)]")
+                let echoed = JSONSearch.str(page, "itemId").isEmpty ? "缺失" : JSONSearch.str(page, "itemId")
+                let detail = "route=\(type), videoInfoRes=\(info.isEmpty ? "缺失" : "存在"), item_list=\(items.count), itemId=\(echoed), 请求id=\(link.id)"
+                throw VideoParseError(
+                    .unknown,
+                    "抖音没有返回该作品的数据（作品不可见 / 需要登录 / 平台改版）[\(detail)] [web: \(webDetail)]"
+                )
             }
 
             let video = JSONSearch.dictionary(in: item, path: ["video"])
@@ -200,16 +271,18 @@ struct DouyinParser: VideoParser {
             let playAddr = JSONSearch.dictionary(in: video, path: ["play_addr"])
             var videoURL = JSONSearch.strings(in: playAddr, keys: ["url_list"]).first ?? ""
             let uri = JSONSearch.str(playAddr, "uri")
+
             if videoURL.isEmpty, !uri.isEmpty {
-                // 直链被拿掉时用 video_id 走 play 端点，这条路由十年来一直活着
-                videoURL = "https://www.iesdouyin.com/aweme/v1/play/?video_id=\(uri)&ratio=1080p&line=0"
+                videoURL = "https://aweme.snssdk.com/aweme/v1/play/?video_id=\(uri)&ratio=1080p&line=0"
             }
             if !videoURL.isEmpty {
-                let playable = videoURL.replacingOccurrences(of: "playwm", with: "play")
+                let cleaned = videoURL
+                    .replacingOccurrences(of: "/playwm/", with: "/play/")
+                    .replacingOccurrences(of: "playwm", with: "play")
                 medias.append(VideoMedia(
-                    url: TextUtil.httpsURL(playable),
+                    url: TextUtil.httpsURL(cleaned),
                     kind: .video,
-                    fileName: "\(base).\(ParserSupport.extensionForVideo(url: playable))",
+                    fileName: "\(base).\(ParserSupport.extensionForVideo(url: cleaned))",
                     size: -1,
                     headers: mediaHeaders,
                     quality: "无水印"
@@ -232,7 +305,7 @@ struct DouyinParser: VideoParser {
                 cover: TextUtil.httpsURL(cover),
                 text: title,
                 timestampSeconds: JSONSearch.num(item, "create_time"),
-                url: "https://www.douyin.com/video/\(link.id)",
+                url: "https://www.douyin.com/\(isNote ? "note" : "video")/\(link.id)",
                 medias: medias
             )
         } catch {
@@ -247,12 +320,29 @@ struct DouyinParser: VideoParser {
     /// ★ 为什么抓接口而不是抓 DOM：详情接口的响应才是干净的结构化数据 —— 图文页 `innerText`
     ///   只有一百多字（图都在轮播里），视频页播放器还可能走 MSE（`blob:`）拿不到直链。
     /// ★ 必须钩在文档开始前：挂晚了页面自己的请求已经发完。
-    /// ★ 只认 `aweme/v1/web/aweme/detail`，且只收 200 且响应体非空的。
-    private static let xhrHookJS = """
+    /// ★ **XHR 和 fetch 都要钩**：抖音不同路由混着用（图文页大量走 fetch），只钩 XHR 会一直不就绪。
+    /// ★ 只收成功的、响应体里带 `aweme_detail` / `aweme_list` / `image_post_info` 的。
+    private static let detailHookJS = """
     (function () {
       try {
         if (window.__yunxDetailHookInstalled) return;
         window.__yunxDetailHookInstalled = true;
+        function interesting(url) {
+          if (!url) return false;
+          return url.indexOf('aweme/detail') >= 0
+              || url.indexOf('aweme/post') >= 0
+              || url.indexOf('note/detail') >= 0;
+        }
+        function keep(text) {
+          try {
+            if (!text || text.length < 40) return;
+            if (text.indexOf('aweme_detail') < 0
+                && text.indexOf('aweme_list') < 0
+                && text.indexOf('image_post_info') < 0) return;
+            window.__yunxAwemeDetail = text;
+          } catch (e) {}
+        }
+        // ---- XHR ----
         var rawOpen = XMLHttpRequest.prototype.open;
         var rawSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.open = function (method, url) {
@@ -264,8 +354,7 @@ struct DouyinParser: VideoParser {
           try {
             xhr.addEventListener('load', function () {
               try {
-                var url = xhr.__yunxUrl || '';
-                if (url.indexOf('aweme/v1/web/aweme/detail') < 0) return;
+                if (!interesting(xhr.__yunxUrl)) return;
                 if (xhr.status !== 200) return;
                 // 不能只读 responseText：responseType 是 'json' 时会抛 InvalidStateError，
                 // 被 try 吞掉 → 钩子永远拿不到值（表现就是「一直不就绪」）
@@ -277,185 +366,250 @@ struct DouyinParser: VideoParser {
                     if (r) text = (typeof r === 'string') ? r : JSON.stringify(r);
                   } catch (e) { text = ''; }
                 }
-                if (text) window.__yunxAwemeDetail = text;
+                keep(text);
               } catch (e) {}
             });
           } catch (e) {}
           return rawSend.apply(this, arguments);
         };
+        // ---- fetch ----
+        var rawFetch = window.fetch;
+        if (rawFetch) {
+          window.fetch = function (input, init) {
+            var url = '';
+            try {
+              url = (typeof input === 'string') ? input : ((input && input.url) || '');
+            } catch (e) { url = ''; }
+            var promise = rawFetch.apply(this, arguments);
+            try {
+              if (interesting(url)) {
+                promise.then(function (res) {
+                  try {
+                    if (!res) return;
+                    if (res.status && res.status !== 200) return;
+                    res.clone().text().then(keep).catch(function () {});
+                  } catch (e) {}
+                }).catch(function () {});
+              }
+            } catch (e) {}
+            return promise;
+          };
+        }
       } catch (e) {}
     })()
     """
 
-    /// 就绪判据：钩子拿到详情 **或** DOM 出现真正的作品图（两条路任一条成立即可）。
+    /// 就绪判据：钩子拿到详情 **或** DOM 出现真正的作品图（两条路任一条成立即可）；
+    /// 页面明确「作品不存在」时立刻返回 `abort`，不再白等 26 秒。
     ///
     /// 不能按链接里的类型分支：`/video/<id>`、`?modal_id=<id>` 都会被抖音 302 到真正的作品页
     /// （图文会落到 `/note/<id>`），「按链接判类型」必然判错，只能干等超时。
     /// DOM 那条只认 `biz_tag=aweme_images` / `tplv-dy-aweme-images`：封面是 `pcweb_cover`、
     /// 相关推荐带 `WEBPC_RELATED`，都不算 —— 否则视频页刚渲染出封面就「就绪」，丢掉直链。
-    private static let readyCheckJS = """
-    (function () {
-      var raw = window.__yunxAwemeDetail;
-      if (typeof raw === 'string' && raw.length > 0) return 'true';
-      var imgs = document.querySelectorAll('img');
-      for (var i = 0; i < imgs.length; i++) {
-        var s = imgs[i].src || '';
-        if (s.indexOf('douyinpic.com') < 0) continue;
-        if (s.indexOf('WEBPC_RELATED') >= 0) continue;
-        if (s.indexOf('biz_tag=aweme_images') >= 0 || s.indexOf('tplv-dy-aweme-images') >= 0) return 'true';
-      }
-      return 'false';
-    })()
-    """
+    private static func readyCheckJS(relaxImages: Bool) -> String {
+        let relax = relaxImages ? "true" : "false"
+        return """
+        (function () {
+          var RELAX = \(relax);
+          var raw = window.__yunxAwemeDetail;
+          if (typeof raw === 'string' && raw.length > 0) return 'true';
+          try {
+            var text = (document.body && document.body.textContent) || '';
+            text = text.substring(0, 3000);
+            if (text.indexOf('作品不存在') >= 0
+                || text.indexOf('该作品已删除') >= 0
+                || text.indexOf('页面不见了') >= 0) return 'abort';
+          } catch (e) {}
+          var imgs = document.querySelectorAll('img');
+          for (var i = 0; i < imgs.length; i++) {
+            var s = imgs[i].src || '';
+            if (s.indexOf('douyinpic') < 0 && s.indexOf('byteimg') < 0) continue;
+            if (s.indexOf('WEBPC_RELATED') >= 0) continue;
+            if (s.indexOf('pcweb_cover') >= 0) continue;
+            if (s.indexOf('aweme-avatar') >= 0) continue;
+            var isWork = s.indexOf('biz_tag=aweme_images') >= 0 || s.indexOf('tplv-dy-aweme-images') >= 0;
+            if (isWork) return 'true';
+            // 图文页可能不挂 aweme_images 的 tag，页面上除了作品图没有别的图，放宽即可
+            if (RELAX) return 'true';
+          }
+          return 'false';
+        })()
+        """
+    }
 
     /// 取数：多条数据源都试，只回传必要字段（整份详情 100KB+，回传又慢又容易出问题）。
-    private static let extractJS = """
-    (function () {
-      try {
-        function firstUrl(node) {
-          if (!node) return '';
-          var list = node.url_list || node.urlList || null;
-          if (list && list.length) return String(list[0] || '');
-          return '';
-        }
-        function keysOf(node) {
-          if (!node || typeof node !== 'object') return '';
-          var keys = [];
-          for (var p in node) keys.push(p);
-          return keys.join(',');
-        }
-        function motionUrl(item) {
-          if (!item) return '';
-          var v = item.video;
-          if (!v) return '';
-          var direct = firstUrl(v.playAddr) || firstUrl(v.play_addr)
-              || firstUrl(v.playApi) || firstUrl(v.downloadAddr) || firstUrl(v.download_addr);
-          if (direct) return direct;
-          var list = v.playAddr || v.play_addr || null;
-          if (list && list.length) {
-            var first = list[0];
-            if (first) return String(first.src || first.url || '');
-          }
-          return '';
-        }
-        function hookDetail() {
-          var raw = window.__yunxAwemeDetail || '';
-          if (!raw) return null;
+    ///
+    /// - `awemeID`: 用于在 `aweme_list`（个人页列表接口）里挑出当前作品。
+    /// - `relaxImages`: 图文/动图页放宽 DOM 兜底（该页的图只有作品图）。
+    private static func extractJS(awemeID: String, relaxImages: Bool) -> String {
+        let target = awemeID.replacingOccurrences(of: "\"", with: "")
+        let relax = relaxImages ? "true" : "false"
+        return """
+        (function () {
           try {
-            var root = JSON.parse(raw);
-            return root.aweme_detail || root.awemeDetail || (root.data && root.data.aweme_detail) || null;
-          } catch (e) { return null; }
-        }
-        var ssrNote = 'none';
-        function readSsrDetail() {
-          var node = document.querySelector('#RENDER_DATA');
-          if (node && node.textContent) {
-            try {
-              var app = JSON.parse(decodeURIComponent(node.textContent)).app;
-              if (app && app.videoDetail) { ssrNote = 'rd-ok'; return app.videoDetail; }
-              ssrNote = 'rd-no-videoDetail';
-            } catch (e) { ssrNote = 'rd-parse-fail'; }
-          } else {
-            ssrNote = 'rd-missing';
-          }
-          try {
-            var ssr = window.SSR_RENDER_DATA;
-            if (ssr && ssr.app && ssr.app.videoDetail) { ssrNote += '+global-ok'; return ssr.app.videoDetail; }
-          } catch (e) {}
-          return null;
-        }
-        function imagesFrom(node) {
-          if (!node || !node.length) return null;
-          var list = [];
-          var mlist = [];
-          for (var i = 0; i < node.length; i++) {
-            var item = node[i];
-            var u = firstUrl(item);
-            if (!u && item.display_image) u = firstUrl(item.display_image);
-            if (u) { list.push(u); mlist.push(motionUrl(item)); }
-          }
-          if (!list.length) return null;
-          return { images: list, motions: mlist, imgKeys: keysOf(node[0]), videoKeys: keysOf(node[0] && node[0].video) };
-        }
-        function domWorkImages() {
-          var result = [];
-          var all = document.querySelectorAll('img');
-          for (var i = 0; i < all.length; i++) {
-            var src = all[i].src || '';
-            if (src.indexOf('douyinpic') < 0) continue;
-            if (src.indexOf('WEBPC_RELATED') >= 0) continue;
-            var isWork = src.indexOf('biz_tag=aweme_images') >= 0 || src.indexOf('tplv-dy-aweme-images') >= 0;
-            if (isWork && result.indexOf(src) < 0) result.push(src);
-          }
-          return result;
-        }
-
-        var hooked = hookDetail();
-        var ssr = readSsrDetail();
-
-        // 图片与动图资源必须成对、来自同一个源，否则下标会错位
-        var images = [];
-        var motions = [];
-        var src = '';
-        var picked = imagesFrom(ssr && ssr.images);
-        if (picked) { src = 'ssr'; }
-        if (!picked) {
-          picked = imagesFrom(hooked && hooked.images);
-          if (picked) { src = 'hook'; }
-        }
-        if (!picked) {
-          picked = imagesFrom(hooked && hooked.image_post_info && hooked.image_post_info.images);
-          if (picked) { src = 'hook'; }
-        }
-        if (picked) {
-          images = picked.images;
-          motions = picked.motions;
-        } else {
-          images = domWorkImages();
-          src = images.length ? 'dom' : 'none';
-        }
-
-        var v = (hooked && hooked.video) || (ssr && ssr.video) || null;
-        var video = '';
-        if (v) {
-          video = firstUrl(v.play_addr) || firstUrl(v.playAddr) || firstUrl(v.play_addr_h264);
-          if (!video && v.bit_rate && v.bit_rate.length) {
-            for (var i = 0; i < v.bit_rate.length; i++) {
-              var candidate = firstUrl(v.bit_rate[i].play_addr);
-              if (candidate) { video = candidate; break; }
+            var TARGET_ID = '\(target)';
+            var RELAX = \(relax);
+            function firstUrl(node) {
+              if (!node) return '';
+              var list = node.url_list || node.urlList || null;
+              if (list && list.length) return String(list[0] || '');
+              return '';
             }
+            function keysOf(node) {
+              if (!node || typeof node !== 'object') return '';
+              var keys = [];
+              for (var p in node) keys.push(p);
+              return keys.join(',');
+            }
+            function motionUrl(item) {
+              if (!item) return '';
+              var v = item.video;
+              if (!v) return '';
+              var direct = firstUrl(v.playAddr) || firstUrl(v.play_addr)
+                  || firstUrl(v.playApi) || firstUrl(v.downloadAddr) || firstUrl(v.download_addr);
+              if (direct) return direct;
+              var list = v.playAddr || v.play_addr || null;
+              if (list && list.length) {
+                var first = list[0];
+                if (first) return String(first.src || first.url || '');
+              }
+              return '';
+            }
+            function hookDetail() {
+              var raw = window.__yunxAwemeDetail || '';
+              if (!raw) return null;
+              try {
+                var root = JSON.parse(raw);
+                var detail = root.aweme_detail || root.awemeDetail || (root.data && root.data.aweme_detail) || null;
+                if (!detail && root.aweme_list && root.aweme_list.length) {
+                  // 个人页列表接口：优先挑 id 对得上的那条
+                  for (var i = 0; i < root.aweme_list.length; i++) {
+                    var it = root.aweme_list[i];
+                    if (it && String(it.aweme_id) === TARGET_ID) { detail = it; break; }
+                  }
+                  if (!detail) detail = root.aweme_list[0];
+                }
+                return detail;
+              } catch (e) { return null; }
+            }
+            var ssrNote = 'none';
+            function readSsrDetail() {
+              var node = document.querySelector('#RENDER_DATA');
+              if (node && node.textContent) {
+                try {
+                  var app = JSON.parse(decodeURIComponent(node.textContent)).app;
+                  if (app && app.videoDetail) { ssrNote = 'rd-ok'; return app.videoDetail; }
+                  ssrNote = 'rd-no-videoDetail';
+                } catch (e) { ssrNote = 'rd-parse-fail'; }
+              } else {
+                ssrNote = 'rd-missing';
+              }
+              try {
+                var ssr = window.SSR_RENDER_DATA;
+                if (ssr && ssr.app && ssr.app.videoDetail) { ssrNote += '+global-ok'; return ssr.app.videoDetail; }
+              } catch (e) {}
+              return null;
+            }
+            function imagesFrom(node) {
+              if (!node || !node.length) return null;
+              var list = [];
+              var mlist = [];
+              for (var i = 0; i < node.length; i++) {
+                var item = node[i];
+                var u = firstUrl(item);
+                if (!u && item.display_image) u = firstUrl(item.display_image);
+                if (u) { list.push(u); mlist.push(motionUrl(item)); }
+              }
+              if (!list.length) return null;
+              return { images: list, motions: mlist, imgKeys: keysOf(node[0]), videoKeys: keysOf(node[0] && node[0].video) };
+            }
+            function domWorkImages() {
+              var result = [];
+              var seen = {};
+              var all = document.querySelectorAll('img');
+              for (var i = 0; i < all.length; i++) {
+                var src = all[i].src || '';
+                if (src.indexOf('douyinpic') < 0 && src.indexOf('byteimg') < 0) continue;
+                if (src.indexOf('WEBPC_RELATED') >= 0) continue;
+                if (src.indexOf('pcweb_cover') >= 0) continue;
+                if (src.indexOf('aweme-avatar') >= 0) continue;
+                var isWork = src.indexOf('biz_tag=aweme_images') >= 0 || src.indexOf('tplv-dy-aweme-images') >= 0;
+                if (!isWork && !RELAX) continue;
+                var key = src.split('?')[0];
+                if (seen[key]) continue;
+                seen[key] = 1;
+                result.push(src);
+              }
+              return result;
+            }
+
+            var hooked = hookDetail();
+            var ssr = readSsrDetail();
+
+            // 图片与动图资源必须成对、来自同一个源，否则下标会错位
+            var images = [];
+            var motions = [];
+            var src = '';
+            var picked = imagesFrom(hooked && hooked.images);
+            if (picked) { src = 'hook'; }
+            if (!picked) {
+              picked = imagesFrom(hooked && hooked.image_post_info && hooked.image_post_info.images);
+              if (picked) { src = 'hook'; }
+            }
+            if (!picked) {
+              picked = imagesFrom(ssr && ssr.images);
+              if (picked) { src = 'ssr'; }
+            }
+            if (picked) {
+              images = picked.images;
+              motions = picked.motions;
+            } else {
+              images = domWorkImages();
+              src = images.length ? 'dom' : 'none';
+            }
+
+            var v = (hooked && hooked.video) || (ssr && ssr.video) || null;
+            var video = '';
+            if (v) {
+              video = firstUrl(v.play_addr) || firstUrl(v.playAddr) || firstUrl(v.play_addr_h264);
+              if (!video && v.bit_rate && v.bit_rate.length) {
+                for (var i = 0; i < v.bit_rate.length; i++) {
+                  var candidate = firstUrl(v.bit_rate[i].play_addr);
+                  if (candidate) { video = candidate; break; }
+                }
+              }
+              video = video.replace('/playwm/', '/play/');
+            }
+
+            var d = hooked || ssr;
+            var author = '';
+            if (d && d.author) author = d.author.nickname || d.author.unique_id || '';
+
+            var title = (d && d.desc) || '';
+            if (!title) {
+              var pageTitle = document.title || '';
+              var tail = pageTitle.lastIndexOf(' - 抖音');
+              if (tail > 0) pageTitle = pageTitle.substring(0, tail);
+              title = pageTitle;
+            }
+
+            return JSON.stringify({
+              title: title,
+              desc: (d && d.desc) || '',
+              author: author,
+              video: video,
+              images: images,
+              motions: motions,
+              cover: (v && (firstUrl(v.cover) || firstUrl(v.origin_cover))) || '',
+              src: src,
+              ssr: ssrNote
+            });
+          } catch (e) {
+            return JSON.stringify({ error: 'js: ' + e });
           }
-          video = video.replace('/playwm/', '/play/');
-        }
-
-        var d = hooked || ssr;
-        var author = '';
-        if (d && d.author) author = d.author.nickname || d.author.unique_id || '';
-
-        var title = (d && d.desc) || '';
-        if (!title) {
-          var pageTitle = document.title || '';
-          var tail = pageTitle.lastIndexOf(' - 抖音');
-          if (tail > 0) pageTitle = pageTitle.substring(0, tail);
-          title = pageTitle;
-        }
-
-        return JSON.stringify({
-          title: title,
-          desc: (d && d.desc) || '',
-          author: author,
-          video: video,
-          images: images,
-          motions: motions,
-          cover: (v && (firstUrl(v.cover) || firstUrl(v.origin_cover))) || '',
-          src: src,
-          ssr: ssrNote
-        });
-      } catch (e) {
-        return JSON.stringify({ error: 'js: ' + e });
-      }
-    })()
-    """
+        })()
+        """
+    }
 }
 
 // MARK: - 快手

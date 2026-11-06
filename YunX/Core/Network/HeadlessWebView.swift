@@ -41,6 +41,7 @@ final class HeadlessWebView: NSObject {
         readyCheckJS: String,
         extractJS: String,
         timeout: TimeInterval = 40,
+        settle: TimeInterval = 0.25,
         documentStartScripts: [String] = []
     ) async -> String? {
         guard !busy, let target = URL(string: url) else { return nil }
@@ -86,15 +87,18 @@ final class HeadlessWebView: NSObject {
         while Date() < deadline {
             if failure != nil { return nil }
             try? await Task.sleep(nanoseconds: 400_000_000)
-            if let value = await evaluate(readyCheckJS), value == "true" || value == "1" {
+            guard let value = await evaluate(readyCheckJS) else { continue }
+            if value == "true" || value == "1" {
                 ready = true
                 break
             }
+            // 页面自己都说「作品不存在」了，没必要再等到超时
+            if value == "abort" { break }
         }
         guard ready, failure == nil else { return nil }
 
         // 就绪后再给页面一点时间把详情写完（DOM/接口都可能在就绪判据之后才落定）
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settle) * 1_000_000_000))
         guard let json = await evaluate(extractJS), !json.isEmpty, json != "null" else { return nil }
         return json
     }

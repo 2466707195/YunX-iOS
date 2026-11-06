@@ -28,8 +28,8 @@ targets:
       path: YunX/Resources/Info.plist
       properties:
         CFBundleDisplayName: 云析
-        CFBundleShortVersionString: "1.0.7"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "1.0.8"
+        CFBundleVersion: "9"
         CFBundleDevelopmentRegion: zh-Hans
         UILaunchScreen:
           UIColorName: LaunchBackground
