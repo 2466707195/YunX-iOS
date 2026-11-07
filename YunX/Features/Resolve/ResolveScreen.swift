@@ -15,7 +15,6 @@ struct ResolveScreen: View {
 
     @State private var passcodeInput: String = ""
     @State private var showBookmarks = false
-    @State private var showSupportList = true
 
     private var resolve: ResolveCoordinator { model.resolve }
 
@@ -121,10 +120,6 @@ struct ResolveScreen: View {
                         }
                     }
 
-                    if showSupportList {
-                        supportCard
-                    }
-
                     SectionHeader(title: "快捷方式", hint: "收藏的分享", action: { showBookmarks = true })
                     bookmarkRow
 
@@ -204,37 +199,6 @@ struct ResolveScreen: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Aurora.warningContainer)
         )
-    }
-
-    // MARK: 支持的平台
-    private var supportCard: some View {
-        SectionCard {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("支持的平台")
-                        .font(AuroraFont.labelLarge)
-                        .foregroundStyle(Aurora.ink)
-                    Spacer()
-                    TextLinkButton(text: showSupportList ? "收起" : "展开") {
-                        withAnimation(.easeOut(duration: 0.2)) { showSupportList.toggle() }
-                    }
-                }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 6)], alignment: .leading, spacing: 6) {
-                    ForEach(SharePlatform.allCases.filter { $0 != .github }) { platform in
-                        TinyChip(text: platform.shortName, tint: platform.tint)
-                    }
-                }
-                Divider().background(Aurora.hairline)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 6)], alignment: .leading, spacing: 6) {
-                    ForEach(VideoPlatform.allCases) { platform in
-                        TinyChip(text: platform.displayName, tint: platform.tint)
-                    }
-                }
-                Text("网盘目前支持夸克 / UC 的完整解析；其余平台的适配层已留好统一接口（见 PanAPI）。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Aurora.muted)
-            }
-        }
     }
 
     // MARK: 快捷方式

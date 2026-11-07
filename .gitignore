@@ -20,3 +20,6 @@ YunX/Resources/Info.plist
 
 # 全能签上传脚本记住的地址（跟机器走，不入库）
 scripts/.qnq_last_server
+
+# auora 图标工具的回执与备份
+.auora/
